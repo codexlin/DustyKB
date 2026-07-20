@@ -1,0 +1,157 @@
+"use client";
+
+import { useCallback, useState, type FormEvent } from "react";
+import { flushSync } from "react-dom";
+import { toast } from "sonner";
+
+import { ChatPanel, type ChatTurn } from "@/components/dashboard/chat-panel";
+import { DashboardPageFrame } from "@/components/dashboard/dashboard-page-frame";
+import { useDocumentControls } from "@/components/dashboard/use-document-controls";
+import { useKnowledgeBaseControls } from "@/components/dashboard/use-knowledge-base-controls";
+import { WorkspaceContextPanel } from "@/components/dashboard/workspace-context-panel";
+import { askQuestionStream, listQueryLogs, updateQueryFeedback } from "@/lib/api";
+
+export function WorkspacePageClient() {
+  const [question, setQuestion] = useState("");
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const kb = useKnowledgeBaseControls({
+    setError,
+    onDeleted: () => {
+      setTurns([]);
+    },
+  });
+
+  const docs = useDocumentControls({
+    selectedKbId: kb.selectedKbId,
+    refreshKbs: kb.refreshKbs,
+    setError,
+  });
+
+  const refreshQueryLogs = useCallback(async (kbId: string) => {
+    if (!kbId) return;
+    await listQueryLogs(kbId);
+  }, []);
+
+  async function onAsk(event: FormEvent) {
+    event.preventDefault();
+    if (!kb.selectedKbId || !question.trim()) return;
+    const turnId = crypto.randomUUID();
+    const currentQuestion = question.trim();
+    setQuestion("");
+    setTurns((prev) => [{ id: turnId, question: currentQuestion }, ...prev]);
+    setBusy("query");
+    setError(null);
+    try {
+      await askQuestionStream(kb.selectedKbId, currentQuestion, {
+        onSources: (sources) => {
+          setTurns((prev) =>
+            prev.map((turn) =>
+              turn.id === turnId
+                ? { ...turn, isComplete: false, result: { answer: "", sources, model: "qwen-plus" } }
+                : turn,
+            ),
+          );
+        },
+        onToken: (token) => {
+          setTurns((prev) =>
+            prev.map((turn) =>
+              turn.id === turnId
+                ? {
+                    ...turn,
+                    result: {
+                      answer: `${turn.result?.answer ?? ""}${token}`,
+                      sources: turn.result?.sources ?? [],
+                      model: turn.result?.model ?? "qwen-plus",
+                    },
+                  }
+                : turn,
+            ),
+          );
+        },
+        onDone: (result) => {
+          setTurns((prev) =>
+            prev.map((turn) => (turn.id === turnId ? { ...turn, isComplete: true, result } : turn)),
+          );
+        },
+        onError: (message) => {
+          throw new Error(message);
+        },
+      });
+      await refreshQueryLogs(kb.selectedKbId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "问答失败";
+      setTurns((prev) =>
+        prev.map((turn) => (turn.id === turnId ? { ...turn, error: message } : turn)),
+      );
+      setError(message);
+      toast.error("问答失败", { description: message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onFeedback(logId: string | null | undefined, feedback: "helpful" | "not_helpful") {
+    if (!logId) {
+      toast.error("暂无可记录的问答日志");
+      return;
+    }
+    setBusy(`feedback-${logId}`);
+    try {
+      const record = await updateQueryFeedback(logId, feedback);
+      setTurns((items) =>
+        items.map((turn) =>
+          turn.result?.query_log_id === logId
+            ? { ...turn, result: { ...turn.result, feedback: record.feedback } }
+            : turn,
+        ),
+      );
+      toast.success(feedback === "helpful" ? "已标记为有帮助" : "已标记为没帮助");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "反馈保存失败";
+      toast.error("反馈保存失败", { description: message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <DashboardPageFrame kbCount={kb.kbs.length} docCount={docs.docs.length} turnCount={turns.length} error={error}>
+      <div className="grid flex-1 gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,0.75fr)]">
+        <ChatPanel
+          selectedKb={kb.selectedKb}
+          selectedKbId={kb.selectedKbId}
+          question={question}
+          turns={turns}
+          busy={busy}
+          expandedSource={expandedSource}
+          onQuestionChange={setQuestion}
+          onAsk={onAsk}
+          onFeedback={(logId, feedback) => void onFeedback(logId, feedback)}
+          onToggleSource={setExpandedSource}
+        />
+
+        <WorkspaceContextPanel
+          kbs={kb.kbs}
+          selectedKb={kb.selectedKb}
+          selectedKbId={kb.selectedKbId}
+          docs={docs.docs}
+          loadingDocs={docs.loading}
+          onSelectKb={(nextKbId) => {
+            if (nextKbId !== kb.selectedKbId) {
+              flushSync(() => {
+                docs.beginKbSwitch(nextKbId);
+                setTurns([]);
+                setExpandedSource(null);
+              });
+            }
+            kb.setSelectedKbId(nextKbId);
+          }}
+        />
+      </div>
+    </DashboardPageFrame>
+  );
+}
