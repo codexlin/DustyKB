@@ -45,16 +45,16 @@ export function EmptyKnowledgeBaseState() {
             <Archive className="size-7 text-primary" />
           </div>
           <div>
-            <CardTitle className="font-heading text-3xl">还没有知识库</CardTitle>
+            <CardTitle className="font-heading text-3xl">还没有文库</CardTitle>
             <CardDescription className="mt-2 text-sm leading-6">
-              先创建第一个知识库，然后就可以上传文档、构建向量索引并开始 RAG 问答。
+              先建一个文库，再收录资料，就可以开始提问了。
             </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={onCreate}>
             <div className="space-y-1.5">
-              <Label htmlFor="empty-kb-name">知识库名称</Label>
+              <Label htmlFor="empty-kb-name">文库名称</Label>
               <Input
                 id="empty-kb-name"
                 value={name}
@@ -80,7 +80,7 @@ export function EmptyKnowledgeBaseState() {
               className="w-full rounded-none border border-primary/40 font-mono uppercase tracking-[0.14em]"
             >
               {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              {busy ? "创建中" : "创建第一个知识库"}
+              {busy ? "创建中" : "创建第一个文库"}
             </Button>
           </form>
         </CardContent>

@@ -55,9 +55,9 @@ export function KnowledgeBasePanel({
         <div className="flex items-center justify-between gap-3">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <Database className="size-4 text-primary" /> 知识库
+              <Database className="size-4 text-primary" /> 文库
             </CardTitle>
-            <CardDescription>创建或切换当前工作空间</CardDescription>
+            <CardDescription>创建新文库，或切换到其他文库</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="rounded-none font-mono">{kbs.length}</Badge>
@@ -99,7 +99,7 @@ export function KnowledgeBasePanel({
           </div>
           <Button className="w-full rounded-none border border-primary/40 font-mono uppercase tracking-[0.14em]" type="submit" disabled={busy === "create-kb"}>
             {busy === "create-kb" ? <Loader2 className="animate-spin" /> : <Sparkles />}
-            {busy === "create-kb" ? "创建中" : "新建知识库"}
+            {busy === "create-kb" ? "创建中" : "新建文库"}
           </Button>
         </form>
 
@@ -110,7 +110,7 @@ export function KnowledgeBasePanel({
                 删除确认
               </p>
               <p className="text-xs leading-5 text-muted-foreground">
-                将删除知识库、文档记录、问答日志、Qdrant 向量和本地上传文件。请输入
+                将永久删除该文库下的资料、问答档案和上传文件。请输入
                 <span className="mx-1 font-mono text-foreground">{selectedKb.name}</span>
                 确认。
               </p>
@@ -172,7 +172,7 @@ export function KnowledgeBasePanel({
                 </Badge>
               </Button>
             ))}
-            {!kbs.length ? <EmptyState text="还没有知识库，先创建一个。" /> : null}
+            {!kbs.length ? <EmptyState text="还没有文库，先创建一个。" /> : null}
           </div>
         </ScrollArea>
       </CardContent>

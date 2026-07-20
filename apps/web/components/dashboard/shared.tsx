@@ -33,31 +33,22 @@ export function QualityPanel({
   compact?: boolean;
   onFeedback: (feedback: "helpful" | "not_helpful") => void;
 }) {
-  const scores = sources.map((source) => source.score);
-  const maxScore = scores.length ? Math.max(...scores) : null;
-  const minScore = scores.length ? Math.min(...scores) : null;
-
   return (
     <div className="space-y-2 border border-primary/20 bg-card/55 p-2">
-      <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
         <Badge variant="outline" className="rounded-none font-mono">
           {model}
         </Badge>
         <span className="border border-primary/20 bg-background/70 px-1.5 py-0.5">
-          {latencyMs == null ? "latency -" : `${Math.round(latencyMs)}ms`}
+          {latencyMs == null ? "耗时 —" : `耗时 ${Math.round(latencyMs)}ms`}
         </span>
         <span className="border border-primary/20 bg-background/70 px-1.5 py-0.5">
-          {sources.length} sources
+          {sources.length} 条引用
         </span>
-        {maxScore != null && minScore != null ? (
-          <span className="border border-primary/20 bg-background/70 px-1.5 py-0.5">
-            score {maxScore.toFixed(3)} / {minScore.toFixed(3)}
-          </span>
-        ) : null}
       </div>
       {!compact ? (
         <p className="text-xs leading-5 text-muted-foreground">
-          这些指标用于观察本次回答质量：耗时越低体验越好；source 分数和数量用于判断召回是否稳定。
+          觉得答案有用吗？你的反馈能帮助我们改进回答质量。
         </p>
       ) : null}
       <div className="flex gap-2">

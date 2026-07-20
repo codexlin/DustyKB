@@ -1,9 +1,9 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Clock3, Download, Eye, FileText, Loader2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, Download, Eye, FileText, Loader2, RefreshCw, Trash2, UploadCloud, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 function documentStatusMeta(doc: DocumentRecord) {
   if (doc.status === "ready") {
     return {
-      label: "ready",
+      label: "就绪",
       icon: CheckCircle2,
       className: "border-[#6f8f4e]/50 bg-[#e4efd6] text-[#315c38]",
     };
@@ -37,23 +37,30 @@ function documentStatusMeta(doc: DocumentRecord) {
   }
   if (doc.status === "failed") {
     return {
-      label: "failed",
+      label: "失败",
       icon: AlertTriangle,
       className: "border-destructive/50 bg-destructive/10 text-destructive",
     };
   }
   return {
-    label: doc.status,
+    label: statusLabel(doc.status),
     icon: FileText,
     className: "border-primary/30 text-muted-foreground",
   };
 }
 
 function queueStatusMeta(status: UploadQueueItem["status"]) {
-  if (status === "ready") return { label: "完成", className: "border-[#6f8f4e]/50 text-[#315c38]" };
+  if (status === "ready") return { label: "可用", className: "border-[#6f8f4e]/50 text-[#315c38]" };
   if (status === "failed") return { label: "失败", className: "border-destructive/50 text-destructive" };
   if (status === "indexing") return { label: "处理中", className: "border-primary/50 text-primary" };
   return { label: "上传中", className: "border-primary/40 text-primary" };
+}
+
+function statusLabel(status: string) {
+  if (status === "ready") return "就绪";
+  if (status === "processing") return "处理中";
+  if (status === "failed") return "失败";
+  return status;
 }
 
 export function DocumentPanel({
@@ -99,14 +106,16 @@ export function DocumentPanel({
   const showIngestStatus = uploadQueue.length > 0 || processingCount > 0;
 
   return (
-    <Card className="flex min-h-[calc(100vh-17rem)] flex-col border-2 border-primary/40 bg-card/90 shadow-[7px_7px_0_rgba(67,45,27,0.12)] backdrop-blur">
+    <Card className="flex min-h-[min(28rem,calc(100dvh-10rem))] flex-col border-2 border-primary/40 bg-card/90 shadow-[7px_7px_0_rgba(67,45,27,0.12)] backdrop-blur xl:min-h-[calc(100vh-17rem)]">
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <div>
             <CardTitle className="flex items-center gap-2">
               <FileText className="size-4 text-primary" /> 文档
             </CardTitle>
-            <CardDescription>{selectedKb?.name ?? "请先选择知识库"}</CardDescription>
+            <CardDescription>
+              {selectedKb ? `收录资料到「${selectedKb.name}」` : "请先选择文库"}
+            </CardDescription>
           </div>
           <Badge variant="outline" className="rounded-none font-mono">{docs.length}</Badge>
         </div>
@@ -140,10 +149,10 @@ export function DocumentPanel({
           </span>
           <span className="space-y-1">
             <span className="block font-medium">
-              {busy === "upload" ? "入库中..." : "上传 TXT / Markdown / PDF / CSV / XLSX"}
+              {busy === "upload" ? "正在上传…" : "点击上传文档"}
             </span>
             <span className="block text-xs text-muted-foreground">
-              文件会解析为结构化 blocks，chunk 和向量进入 Qdrant。
+              支持 TXT、Markdown、PDF、CSV、Excel。上传后会自动处理，完成后即可提问。
             </span>
           </span>
         </Label>
@@ -153,16 +162,16 @@ export function DocumentPanel({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-primary">
-                  Ingest Queue
+                  处理进度
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {activeUploadCount || processingCount
-                    ? "文档正在上传或写入向量索引，列表会自动刷新。"
-                    : "最近上传已完成，状态会保留在这里方便确认。"}
+                    ? "文档正在处理中，列表会自动更新。"
+                    : "最近上传的文件已处理完成。"}
                 </p>
               </div>
               <Badge variant="outline" className="rounded-none font-mono">
-                {activeIngestCount ? `${activeIngestCount} active` : "done"}
+                {activeIngestCount ? `${activeIngestCount} 进行中` : "已完成"}
               </Badge>
             </div>
             {uploadQueue.length ? (
@@ -218,7 +227,7 @@ export function DocumentPanel({
                       <TruncatedText text={doc.filename} />
                     </p>
                     <p className="font-mono text-xs text-muted-foreground">
-                      {doc.chunk_count} chunks · {(doc.size / 1024).toFixed(1)} KB · {formatDateTime(doc.created_at)}
+                      {doc.chunk_count} 个片段 · {(doc.size / 1024).toFixed(1)} KB · {formatDateTime(doc.created_at)}
                     </p>
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -247,46 +256,60 @@ export function DocumentPanel({
                           </Button>
                         ) : null}
                       </div>
-                      <div className="flex shrink-0 items-center gap-1">
+                      <div className="flex shrink-0 overflow-hidden border border-primary/30 bg-background shadow-[2px_2px_0_rgba(67,45,27,0.08)]">
                         <Button
                           type="button"
-                          size="icon-sm"
-                          variant={isSelected ? "secondary" : "outline"}
+                          size="icon"
+                          variant="ghost"
+                          className={cn(
+                            "size-10 rounded-none border-0 border-r border-primary/20 hover:bg-secondary",
+                            isSelected && "bg-accent text-primary",
+                          )}
                           disabled={detailLoading && isSelected}
                           onClick={() => onInspectDoc(doc)}
                           aria-label={`查看 ${doc.filename}`}
+                          title="查看"
                         >
-                          {detailLoading && isSelected ? <Loader2 className="animate-spin" /> : <Eye />}
+                          {detailLoading && isSelected ? <Loader2 className="size-4 animate-spin" /> : <Eye className="size-4" />}
                         </Button>
                         <a
-                          className="inline-flex size-7 items-center justify-center rounded-[min(var(--radius-md),12px)] border border-border bg-background transition hover:bg-muted"
+                          className="inline-flex size-10 items-center justify-center border-r border-primary/20 text-foreground transition hover:bg-secondary"
                           href={getDocumentDownloadUrl(doc.id)}
                           aria-label={`下载 ${doc.filename}`}
+                          title="下载"
                         >
                           <Download className="size-4" />
                         </a>
                         <Button
                           type="button"
-                          size="icon-sm"
-                          variant="outline"
+                          size="icon"
+                          variant="ghost"
+                          className="size-10 rounded-none border-0 border-r border-primary/20 hover:bg-secondary"
                           disabled={busy === `reindex-${doc.id}` || doc.status === "processing"}
                           onClick={() => onReindexDoc(doc)}
                           aria-label={`重新索引 ${doc.filename}`}
+                          title="重新索引"
                         >
-                          {busy === `reindex-${doc.id}` ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                          {busy === `reindex-${doc.id}` ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-4" />
+                          )}
                         </Button>
                         <Button
                           type="button"
-                          size="icon-sm"
-                          variant="destructive"
+                          size="icon"
+                          variant="ghost"
+                          className="size-10 rounded-none border-0 text-destructive hover:bg-destructive/10"
                           disabled={busy === `delete-${doc.id}`}
                           onClick={() => onDeleteDoc(doc.id)}
                           aria-label={`删除 ${doc.filename}`}
+                          title="删除"
                         >
                           {busy === `delete-${doc.id}` ? (
-                            <Loader2 className="animate-spin" />
+                            <Loader2 className="size-4 animate-spin" />
                           ) : (
-                            <Trash2 />
+                            <Trash2 className="size-4" />
                           )}
                         </Button>
                       </div>
@@ -299,10 +322,25 @@ export function DocumentPanel({
             </div>
           </div>
         </ScrollArea>
-        <aside className="min-h-0 border border-primary/25 bg-background/55 p-3 shadow-[4px_4px_0_rgba(67,45,27,0.08)]">
+        {selectedDoc ? (
+          <button
+            type="button"
+            className="fixed inset-0 z-30 bg-[#332313]/35 xl:hidden"
+            aria-label="关闭文档详情"
+            onClick={() => onInspectDoc(selectedDoc)}
+          />
+        ) : null}
+        <aside
+          className={cn(
+            "min-h-0 border border-primary/25 bg-background/55 p-3 shadow-[4px_4px_0_rgba(67,45,27,0.08)]",
+            selectedDoc
+              ? "fixed inset-x-0 bottom-0 top-[4.75rem] z-40 overflow-y-auto bg-card/98 p-4 shadow-[0_-8px_0_rgba(67,45,27,0.12)] xl:static xl:inset-auto xl:z-auto xl:overflow-visible xl:bg-background/55 xl:p-3 xl:shadow-[4px_4px_0_rgba(67,45,27,0.08)]"
+              : "hidden xl:block",
+          )}
+        >
           {!selectedDoc ? (
-            <div className="flex min-h-48 items-center justify-center border border-dashed border-primary/25 bg-card/50 p-5 text-center font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
-              选择左侧文档查看详情
+            <div className="flex min-h-48 items-center justify-center border border-dashed border-primary/25 bg-card/50 p-5 text-center text-sm text-muted-foreground">
+              选择一篇文档查看详情
             </div>
           ) : detailLoading ? (
             <RetroLoading label="Loading document detail" />
@@ -316,13 +354,13 @@ export function DocumentPanel({
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                          Document Detail
+                          文档详情
                         </p>
                         <h3 className="mt-1 min-w-0 text-sm font-semibold">
                           <TruncatedText text={selectedDoc.filename} />
                         </h3>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
+                      <div className="flex shrink-0 items-center gap-2">
                         <Badge variant="outline" className={cn("rounded-none font-mono", statusMeta.className)}>
                           {selectedDoc.status === "processing" ? (
                             <Loader2 className="size-3 animate-spin" />
@@ -333,12 +371,14 @@ export function DocumentPanel({
                         </Badge>
                         <Button
                           type="button"
-                          size="sm"
+                          size="icon"
                           variant="outline"
-                          className="rounded-none font-mono uppercase tracking-[0.14em]"
+                          className="size-9 rounded-none"
                           onClick={() => onInspectDoc(selectedDoc)}
+                          aria-label="关闭详情"
+                          title="关闭"
                         >
-                          关闭
+                          <X className="size-4" />
                         </Button>
                       </div>
                     </div>
@@ -351,7 +391,7 @@ export function DocumentPanel({
                       type="button"
                       size="sm"
                       variant="destructive"
-                      className="w-full rounded-none font-mono uppercase tracking-[0.14em]"
+                      className="h-9 w-full rounded-none font-mono"
                       disabled={busy === `reindex-${selectedDoc.id}`}
                       onClick={() => onReindexDoc(selectedDoc)}
                     >
@@ -362,28 +402,30 @@ export function DocumentPanel({
                 ) : null}
                 <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-muted-foreground">
                   <span>上传：{formatDateTime(selectedDoc.created_at)}</span>
-                  <span>状态：{selectedDoc.status}</span>
+                  <span>状态：{statusLabel(selectedDoc.status)}</span>
                   <span>大小：{(selectedDoc.size / 1024).toFixed(1)} KB</span>
-                  <span>Chunk：{selectedDoc.chunk_count}</span>
+                  <span>片段：{selectedDoc.chunk_count}</span>
                 </div>
-                <div className="flex gap-1">
+                <div className="grid grid-cols-2 gap-2">
                   <a
-                    className="inline-flex h-8 items-center justify-center gap-1 rounded-[min(var(--radius-md),12px)] border border-border bg-background px-2 text-xs transition hover:bg-muted"
                     href={getDocumentDownloadUrl(selectedDoc.id)}
+                    className={cn(
+                      buttonVariants({ variant: "outline" }),
+                      "h-9 gap-1.5 rounded-none font-mono",
+                    )}
                   >
                     <Download className="size-3.5" />
                     下载
                   </a>
                   <Button
                     type="button"
-                    size="sm"
                     variant="outline"
-                    className="rounded-none font-mono"
+                    className="h-9 rounded-none font-mono"
                     disabled={busy === `reindex-${selectedDoc.id}` || selectedDoc.status === "processing"}
                     onClick={() => onReindexDoc(selectedDoc)}
                   >
-                    {busy === `reindex-${selectedDoc.id}` ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                    重建
+                    {busy === `reindex-${selectedDoc.id}` ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                    重新索引
                   </Button>
                 </div>
               </div>
@@ -396,7 +438,7 @@ export function DocumentPanel({
                     </p>
                     {docPreview ? (
                       <span className="font-mono text-[11px] text-muted-foreground">
-                        {docPreview.text.length.toLocaleString()} / {docPreview.total_chars.toLocaleString()} chars
+                        {docPreview.text.length.toLocaleString()} / {docPreview.total_chars.toLocaleString()} 字
                       </span>
                     ) : null}
                   </div>
@@ -422,27 +464,25 @@ export function DocumentPanel({
 
                 <div className="space-y-2">
                   <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                    Chunks · {docChunks.length}
+                    文本片段 · {docChunks.length}
                   </p>
                   <ScrollArea className="h-56 pr-2">
                     <div className="space-y-2">
                       {docChunks.map((chunk) => (
                         <details key={`${chunk.doc_id}-${chunk.chunk_index}`} className="border border-primary/20 bg-card/60 p-2">
-                          <summary className="cursor-pointer font-mono text-xs text-primary">
-                            chunk {chunk.chunk_index}
+                          <summary className="cursor-pointer text-xs text-primary">
+                            片段 {chunk.chunk_index + 1}
                             <span className="ml-2 text-muted-foreground">
-                              {chunk.content_type}
-                              {chunk.parser ? ` · ${chunk.parser}` : ""}
-                              {chunk.page ? ` · p.${chunk.page}` : ""}
-                              {chunk.section ? ` · ${chunk.section}` : ""}
+                              {chunk.page ? `第 ${chunk.page} 页` : ""}
+                              {chunk.section ? `${chunk.page ? " · " : ""}${chunk.section}` : ""}
                             </span>
                           </summary>
-                          <p className="mt-2 whitespace-pre-wrap font-mono text-xs leading-5 text-muted-foreground">
+                          <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">
                             {chunk.text}
                           </p>
                         </details>
                       ))}
-                      {!docChunks.length ? <p className="font-mono text-xs text-muted-foreground">暂无 chunk 数据。</p> : null}
+                      {!docChunks.length ? <p className="text-xs text-muted-foreground">暂无文本片段。</p> : null}
                     </div>
                   </ScrollArea>
                 </div>

@@ -24,8 +24,8 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DustyKB · 中文知识库",
-  description: "Next.js + FastAPI + Qdrant 中文知识库工作台",
+  title: "DustyKB · 落灰文库",
+  description: "把文档变成可追问的知识",
 };
 
 export default function RootLayout({
@@ -38,7 +38,8 @@ export default function RootLayout({
       <body className="min-h-full antialiased">
         <QueryProvider>{children}</QueryProvider>
         <Toaster
-          position="bottom-right"
+          position="bottom-center"
+          mobileOffset={{ bottom: 16 }}
           icons={{
             success: <CheckCircle2 className="size-4 text-[#315c38]" />,
             error: <XCircle className="size-4 text-[#8a2f26]" />,

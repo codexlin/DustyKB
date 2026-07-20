@@ -185,7 +185,7 @@ export function useDocumentControls({
           return exists ? items.map((item) => (item.id === doc.id ? doc : item)) : [doc, ...items];
         });
       }
-      toast.success("文档已提交入库", { description: `${uploaded} 个文件正在后台处理` });
+      toast.success("文档已上传", { description: `${uploaded} 个文件正在处理中` });
     } catch (err) {
       const message = err instanceof Error ? err.message : "上传失败";
       setUploadQueue((items) =>

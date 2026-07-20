@@ -51,7 +51,7 @@ export function AccessGate({ children }: { children: ReactNode }) {
       if (status.required && !status.authenticated) {
         clearAccessToken();
         setUnlocked(false);
-        setError("访问令牌不正确");
+        setError("口令不正确");
         return;
       }
       setRequired(status.required);
@@ -85,15 +85,14 @@ export function AccessGate({ children }: { children: ReactNode }) {
       >
         <div className="space-y-2">
           <p className="font-mono text-xs uppercase tracking-[0.16em] text-[#6f5636]">DustyKB</p>
-          <h1 className="font-display text-3xl text-[#332313]">输入访问令牌</h1>
+          <h1 className="font-display text-3xl text-[#332313]">输入访问口令</h1>
           <p className="text-sm leading-6 text-[#6f5636]">
-            此知识库已启用访问保护。令牌由部署环境中的 <span className="font-mono">ACCESS_TOKEN</span>{" "}
-            配置。
+            此知识库已开启访问保护，请输入管理员提供的口令后继续。
           </p>
         </div>
         <div className="space-y-2">
-          <label htmlFor="access-token" className="font-mono text-xs uppercase tracking-[0.12em] text-[#4b351f]">
-            Access Token
+          <label htmlFor="access-token" className="text-xs font-medium text-[#4b351f]">
+            访问口令
           </label>
           <Input
             id="access-token"
@@ -102,14 +101,14 @@ export function AccessGate({ children }: { children: ReactNode }) {
             value={token}
             onChange={(event) => setToken(event.target.value)}
             className="rounded-none border-[#4b351f] bg-[#fff8e8]"
-            placeholder="粘贴访问令牌"
+            placeholder="请输入口令"
             required
           />
         </div>
         {error ? <p className="text-sm text-[#8a2f26]">{error}</p> : null}
         <Button type="submit" disabled={submitting || !token.trim()} className="w-full rounded-none font-mono">
           {submitting ? <Loader2 className="animate-spin" /> : <KeyRound />}
-          进入知识库
+          进入
         </Button>
       </form>
     </div>

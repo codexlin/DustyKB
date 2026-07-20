@@ -50,15 +50,15 @@ export function HistoryPanel({
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <Archive className="size-4 text-primary" /> 问答历史档案
+              <Archive className="size-4 text-primary" /> 档案
             </CardTitle>
             <CardDescription>
-              来自 PostgreSQL 的查询记录，按当前知识库归档。
+              翻阅当前文库里问过的问题与答案。
             </CardDescription>
           </div>
           <div className="flex gap-2">
             <Badge variant="outline" className="rounded-none font-mono">
-              {queryLogs.length} records
+              {queryLogs.length} 条
             </Badge>
             <Button
               type="button"
@@ -139,7 +139,8 @@ export function HistoryPanel({
                                   onClick={() => onToggleSource(isOpen ? null : sourceId)}
                                 >
                                   <span className="min-w-0 truncate text-xs">
-                                    {source.filename} · chunk {source.chunk_index}
+                                    {source.filename}
+                                    {source.page ? ` · 第 ${source.page} 页` : ` · 片段 ${source.chunk_index + 1}`}
                                   </span>
                                   <Badge variant="outline" className="rounded-none font-mono">
                                     {source.score.toFixed(3)}
@@ -163,7 +164,7 @@ export function HistoryPanel({
                 </details>
               </Card>
             ))}
-            {!loading && !queryLogs.length ? <EmptyState text="当前知识库还没有历史提问。" /> : null}
+            {!loading && !queryLogs.length ? <EmptyState text="当前文库还没有问答档案。" /> : null}
           </div>
         </ScrollArea>
       </CardContent>

@@ -75,65 +75,23 @@ export function ChatPanel({
   }
 
   return (
-    <Card className="flex min-h-[calc(100vh-15rem)] flex-col border-2 border-primary/40 bg-card/90 shadow-[7px_7px_0_rgba(67,45,27,0.12)] backdrop-blur">
-      <CardHeader>
+    <Card className="flex min-h-[min(32rem,calc(100dvh-9rem))] flex-col border-2 border-primary/40 bg-card/90 shadow-[7px_7px_0_rgba(67,45,27,0.12)] backdrop-blur xl:min-h-[calc(100vh-15rem)]">
+      <CardHeader className="shrink-0 pb-3">
         <div className="flex items-center justify-between gap-3">
           <div>
             <CardTitle className="flex items-center gap-2">
               <MessageSquare className="size-4 text-primary" /> 问答
             </CardTitle>
-            <CardDescription>
-              {selectedKb ? "Dense+BM25 → RRF → qwen3-rerank → Qwen 生成" : "请先选择知识库"}
+            <CardDescription className="hidden sm:block">
+              {selectedKb ? "依据当前文库作答，并附上原文出处" : "请先选择一个文库"}
             </CardDescription>
           </div>
-          <Badge variant="secondary" className="rounded-none font-mono tracking-[0.16em]">RAG</Badge>
+          <Badge variant="secondary" className="rounded-none font-mono tracking-[0.16em]">问答</Badge>
         </div>
       </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-        <form
-          className="overflow-hidden border border-primary/30 bg-background/70 shadow-[3px_3px_0_rgba(67,45,27,0.08)]"
-          onSubmit={onAsk}
-        >
-          <Textarea
-            className="min-h-24 resize-none rounded-none border-0 bg-transparent px-3 py-3 font-mono shadow-none focus-visible:border-transparent focus-visible:ring-0"
-            value={question}
-            onChange={(event) => onQuestionChange(event.target.value)}
-            onKeyDown={onComposerKeyDown}
-            placeholder={selectedKbId ? "基于当前知识库提问..." : "请先选择知识库"}
-            rows={3}
-            disabled={!selectedKbId}
-          />
-          <div className="flex items-center justify-between gap-3 border-t border-primary/20 bg-muted/35 px-2 py-1.5">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-              Enter 换行 · ⌘/Ctrl+Enter 发送
-            </p>
-            {isQuerying ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="rounded-none border-destructive/40 font-mono uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10"
-                onClick={onCancel}
-              >
-                <Square className="size-3 fill-current" />
-                取消
-              </Button>
-            ) : (
-              <Button
-                type="submit"
-                size="sm"
-                className="rounded-none border border-primary/40 font-mono uppercase tracking-[0.12em]"
-                disabled={!canSubmit}
-              >
-                <Search className="size-3.5" />
-                提问
-              </Button>
-            )}
-          </div>
-        </form>
-
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
         <ScrollArea className="min-h-0 flex-1 pr-3">
-          <div className="space-y-3">
+          <div className="space-y-3 pb-2">
             {turns.map((turn) => {
               const sourceCount = turn.result?.sources.length ?? 0;
               const isTurnOpen = openTurnId === turn.id || !turn.isComplete;
@@ -233,9 +191,9 @@ export function ChatPanel({
                                         onClick={() => onToggleSource(isOpen ? null : sourceId)}
                                       >
                                         <span className="min-w-0 truncate text-xs">
-                                          {source.filename} · chunk {source.chunk_index}
+                                          {source.filename}
                                           {source.section ? ` · ${source.section}` : ""}
-                                          {source.page ? ` · p.${source.page}` : ""}
+                                          {source.page ? ` · 第 ${source.page} 页` : ` · 片段 ${source.chunk_index + 1}`}
                                         </span>
                                         <Badge variant="outline" className="rounded-none font-mono">
                                           {source.score.toFixed(3)}
@@ -291,9 +249,52 @@ export function ChatPanel({
                 </Card>
               );
             })}
-            {!turns.length ? <EmptyState text="上传文档后，在这里验证检索与回答质量。" /> : null}
+            {!turns.length ? <EmptyState text="上传文档后，就可以在这里开始提问。" /> : null}
           </div>
         </ScrollArea>
+
+        <form
+          className="sticky bottom-0 z-10 shrink-0 overflow-hidden border border-primary/30 bg-background/95 shadow-[3px_3px_0_rgba(67,45,27,0.08)] backdrop-blur supports-[padding:max(0px)]:pb-[max(0px,env(safe-area-inset-bottom))]"
+          onSubmit={onAsk}
+        >
+          <Textarea
+            className="min-h-20 resize-none rounded-none border-0 bg-transparent px-3 py-3 text-base font-mono shadow-none focus-visible:border-transparent focus-visible:ring-0 md:min-h-24 md:text-sm"
+            value={question}
+            onChange={(event) => onQuestionChange(event.target.value)}
+            onKeyDown={onComposerKeyDown}
+            placeholder={selectedKbId ? "输入你的问题…" : "请先选择文库"}
+            rows={2}
+            disabled={!selectedKbId}
+          />
+          <div className="flex items-center justify-between gap-3 border-t border-primary/20 bg-muted/45 px-2 py-2">
+            <p className="hidden font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground md:block">
+              Enter 换行 · ⌘/Ctrl+Enter 发送
+            </p>
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground md:hidden">
+              提问
+            </p>
+            {isQuerying ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11 rounded-none border-destructive/40 px-4 font-mono uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10 md:min-h-8 md:px-2.5"
+                onClick={onCancel}
+              >
+                <Square className="size-3 fill-current" />
+                取消
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                className="min-h-11 rounded-none border border-primary/40 px-4 font-mono uppercase tracking-[0.12em] md:min-h-8 md:px-2.5"
+                disabled={!canSubmit}
+              >
+                <Search className="size-3.5" />
+                提问
+              </Button>
+            )}
+          </div>
+        </form>
       </CardContent>
     </Card>
   );
