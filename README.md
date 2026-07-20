@@ -18,6 +18,108 @@
     web/                       # Next.js（建议部署到 Vercel）
 ```
 
+## 架构
+
+### 部署拓扑
+
+生产环境前后端分离：浏览器只打 Vercel 上的 Web；Web 通过 `NEXT_PUBLIC_API_URL` 调用 Dokploy 上的 API。API 与 Postgres、Qdrant 同 compose 内网互通，对外由 Traefik 终结 HTTPS。
+
+```mermaid
+flowchart LR
+  User[浏览器] --> Web[Vercel / Next.js]
+  Web -->|HTTPS JSON / SSE| API[Dokploy / FastAPI]
+  API --> PG[(PostgreSQL)]
+  API --> QD[(Qdrant)]
+  API -->|Embedding / Rerank / Chat| DS[DashScope]
+  Traefik[Traefik] -.-> API
+```
+
+本地 `docker compose` 可把 Web 一并拉起；生产推荐 Web 走 Vercel，Compose 只用 `docker-compose.dokploy.yml`（api + postgres + qdrant）。
+
+### 入库流程（异步）
+
+上传先落库并返回 `processing`，再在后台解析、质检、切块、向量化写入 Qdrant。
+
+```mermaid
+sequenceDiagram
+  participant Web
+  participant API
+  participant PG as PostgreSQL
+  participant FS as 本地 uploads
+  participant QD as Qdrant
+  participant DS as DashScope
+
+  Web->>API: POST /api/docs/upload
+  API->>FS: 保存原文件
+  API->>PG: 创建文档 processing
+  API-->>Web: 立即返回（含进度字段）
+  Note over API: BackgroundTasks.index_document
+  API->>API: 解析 PDF/文本 + 质量门禁
+  alt 扫描件 / 乱码 / 过短
+    API->>PG: status=failed + 原因
+  else 通过
+    API->>API: chunk
+    API->>DS: embed batches
+    API->>QD: upsert vectors
+    API->>PG: chunks 元数据 + status=ready
+  end
+  Web->>API: 轮询文档列表 / 进度
+```
+
+要点：
+
+- PDF：优先 PyMuPDF，失败回退 pypdf；`assess_extract_quality` 拦截疑似扫描件与乱码（**暂无 OCR**）。
+- 进度阶段大致：`queued` → 解析 / embedding → `ready` 或 `failed`。
+- 原文件路径：`data/uploads/{kb_id}/…`（Docker 卷或本地 `apps/api/data`）。
+
+### 问答流程
+
+```mermaid
+flowchart TD
+  Q[用户问题] --> Auth{ACCESS_TOKEN?}
+  Auth -->|需解锁| Gate[Bearer 校验]
+  Auth -->|未设置| Emb
+  Gate --> Emb[Embedding 问题向量]
+  Emb --> Dense[Qdrant 稠密召回]
+  Emb --> BM25[本地 BM25]
+  Dense --> RRF[RRF 融合]
+  BM25 --> RRF
+  RRF --> Rerank[DashScope Rerank]
+  Rerank --> Gate2{命中情况}
+  Gate2 -->|无命中| Copy1[分场景友好文案<br/>空库 / 索引中 / 未覆盖]
+  Gate2 -->|顶分低于 ANSWER_MIN_SCORE<br/>且已成功 rerank| Copy2[弱相关文案<br/>不调用 LLM]
+  Gate2 -->|足够| LLM[Qwen 流式生成]
+  LLM --> Out[答案 + 引用片段]
+  Copy1 --> Out
+  Copy2 --> Out
+```
+
+要点：
+
+- 混合检索默认开启：`HYBRID_ENABLED` + `BM25_TOP_K` + `RRF_K`，再 `RETRIEVE_TOP_K` → `RERANK_TOP_K`。
+- 流式接口：`POST /api/query/stream`（SSE：`sources` → `token*` → `done`）。
+- 弱相关门槛仅在 **rerank 成功** 后生效，避免误伤纯 RRF 小分数；`ANSWER_MIN_SCORE=0` 可关闭。
+
+### 核心模块（实现落点）
+
+| 路径 | 职责 |
+|------|------|
+| `apps/api/app/main.py` | 路由、CORS、上传后台任务、SSE 问答 |
+| `apps/api/app/services/rag.py` | 入库索引、检索编排、`no_match` / `weak_match` |
+| `apps/api/app/services/documents.py` | 多格式解析、CJK 规范化、抽取质量门禁 |
+| `apps/api/app/services/chunking.py` | 文本切块 |
+| `apps/api/app/services/hybrid.py` | BM25 缓存与 RRF 融合 |
+| `apps/api/app/services/qdrant_store.py` | 向量写入 / 检索 |
+| `apps/api/app/services/chunk_store.py` | chunk 元数据（Postgres） |
+| `apps/api/app/services/store.py` | 文库 / 文档元数据、上传路径 |
+| `apps/api/app/services/llm.py` | Embedding / Chat / Rerank 客户端 |
+| `apps/api/app/services/answer_copy.py` | 无命中、弱相关中文文案 |
+| `apps/api/app/auth.py` | 共享口令与 `owner_id` |
+| `apps/web/components/dashboard/*` | 问答台、文库、档案、看板与空状态引导 |
+| `apps/web/lib/api.ts` | 前端 API 与流式消费 |
+
+数据大致分工：**Postgres** 存文库/文档/chunk 元数据/问答日志；**Qdrant** 存向量；**磁盘** 存上传原件。
+
 ## 生产部署（推荐）
 
 | 组件 | 部署位置 | 示例 |
