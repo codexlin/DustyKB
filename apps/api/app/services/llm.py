@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import logging
+import time
+
+import httpx
+from openai import OpenAI
+
+from app.config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+class EmbeddingClient:
+    def __init__(self, settings: Settings) -> None:
+        if not settings.llm_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required (DashScope / OpenAI compatible key)")
+        self.settings = settings
+        self.client = OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+        )
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        started = time.perf_counter()
+        response = self.client.embeddings.create(
+            model=self.settings.embedding_model,
+            input=texts,
+            dimensions=self.settings.embedding_dim,
+        )
+        # API may return out of order; sort by index when present
+        items = sorted(response.data, key=lambda item: getattr(item, "index", 0))
+        logger.info(
+            "llm.embedding model=%s inputs=%s dim=%s duration_ms=%.1f",
+            self.settings.embedding_model,
+            len(texts),
+            len(items[0].embedding) if items else 0,
+            (time.perf_counter() - started) * 1000,
+        )
+        return [list(item.embedding) for item in items]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_texts([text])[0]
+
+
+class ChatClient:
+    def __init__(self, settings: Settings) -> None:
+        if not settings.llm_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required (DashScope / OpenAI compatible key)")
+        self.settings = settings
+        self.client = OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+        )
+
+    def _messages(self, *, question: str, context: str) -> list[dict[str, str]]:
+        system = (
+            "你是企业知识库助手。只根据提供的资料回答用户问题。"
+            "如果资料不足以回答，请明确说不知道，不要编造。"
+            "回答使用简洁中文，必要时分点说明。"
+            "如果需要展示代码，请使用 Markdown fenced code block，并标注语言。"
+        )
+        user = f"资料：\n{context}\n\n问题：{question}"
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    def answer(self, *, question: str, context: str) -> str:
+        started = time.perf_counter()
+        response = self.client.chat.completions.create(
+            model=self.settings.chat_model,
+            messages=self._messages(question=question, context=context),
+            temperature=0.2,
+        )
+        answer = (response.choices[0].message.content or "").strip()
+        logger.info(
+            "llm.chat model=%s question_len=%s context_len=%s answer_len=%s duration_ms=%.1f",
+            self.settings.chat_model,
+            len(question),
+            len(context),
+            len(answer),
+            (time.perf_counter() - started) * 1000,
+        )
+        return answer
+
+    def stream_answer(self, *, question: str, context: str):
+        started = time.perf_counter()
+        chunk_count = 0
+        response = self.client.chat.completions.create(
+            model=self.settings.chat_model,
+            messages=self._messages(question=question, context=context),
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in response:
+            token = chunk.choices[0].delta.content or ""
+            if not token:
+                continue
+            chunk_count += 1
+            yield token
+        logger.info(
+            "llm.chat_stream model=%s question_len=%s context_len=%s chunks=%s duration_ms=%.1f",
+            self.settings.chat_model,
+            len(question),
+            len(context),
+            chunk_count,
+            (time.perf_counter() - started) * 1000,
+        )
+
+
+class RerankClient:
+    def __init__(self, settings: Settings) -> None:
+        if not settings.llm_api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY is required for rerank")
+        self.settings = settings
+        self.endpoint = f"{settings.rerank_base_url.rstrip('/')}/reranks"
+
+    def rerank(
+        self,
+        *,
+        query: str,
+        documents: list[str],
+        top_n: int,
+    ) -> list[tuple[int, float]]:
+        if not documents:
+            return []
+
+        started = time.perf_counter()
+        response = httpx.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.settings.llm_api_key}"},
+            json={
+                "model": self.settings.rerank_model,
+                "query": query,
+                "documents": documents,
+                "top_n": min(top_n, len(documents)),
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        results = [
+            (int(item["index"]), float(item["relevance_score"]))
+            for item in payload.get("results", [])
+        ]
+        logger.info(
+            "llm.rerank model=%s docs=%s returned=%s duration_ms=%.1f",
+            self.settings.rerank_model,
+            len(documents),
+            len(results),
+            (time.perf_counter() - started) * 1000,
+        )
+        return results
