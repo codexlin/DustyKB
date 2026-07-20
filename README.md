@@ -1,140 +1,167 @@
 # DustyKB
 
-可上线中文知识库 MVP：`Next.js` 前端 + `FastAPI` 后端 + `Qdrant` 向量库 + 通义（DashScope）Embedding / Qwen。
+把文档变成可追问的知识。面向个人 / 小团队的中文 RAG 文库：建文库 → 收录资料 → 对着原文提问并核对出处。
 
-## 目录
+**技术栈：** Next.js 前端 · FastAPI 后端 · PostgreSQL · Qdrant · 通义 DashScope（Embedding / Rerank / Qwen）
+
+> 自研检索与问答管线，**不依赖 LangChain / LangGraph**。需要复杂 Agent（多轮重试、答后校验）时可再演进，不必为了 RAG 先上框架。
+
+## 目录结构
 
 ```
-kb-system/
-  docker-compose.yml           # 本地：PostgreSQL + Qdrant + API + Web
-  docker-compose.dokploy.yml   # Dokploy：仅 API + Postgres + Qdrant（Traefik）
+.
+  docker-compose.yml           # 本地：Postgres + Qdrant + API + Web
+  docker-compose.dokploy.yml   # Dokploy：API + Postgres + Qdrant（Traefik）
   .env.example
   apps/
     api/                       # FastAPI
-    web/                       # Next.js 前端（建议部署到 Vercel）
+    web/                       # Next.js（建议部署到 Vercel）
 ```
 
-## Production layout（推荐）
+## 生产部署（推荐）
 
-| 组件 | 部署位置 | 地址示例 |
-|------|----------|----------|
-| Web（Next.js） | Vercel | `https://xxx.vercel.app` |
-| API + Postgres + Qdrant | Dokploy / 腾讯云 | `https://api.verogeo.com` |
+| 组件 | 部署位置 | 示例 |
+|------|----------|------|
+| Web | Vercel | `https://rag.webch.cn` |
+| API + Postgres + Qdrant | Dokploy（腾讯云等） | `https://api.verogeo.com` |
 
-Dokploy Compose 使用仓库根目录的 `docker-compose.dokploy.yml`，并配置 GitHub 自动部署。  
-Vercel 环境变量设置：`NEXT_PUBLIC_API_URL=https://api.verogeo.com`。  
-API 环境变量设置：`CORS_ORIGINS` 为前端域名，`DASHSCOPE_API_KEY` 必填。
+### Vercel（前端）
 
-## Deploy with Docker
-
-一键启动全部服务（PostgreSQL、Qdrant、API、Web）：
+1. 导入本仓库，Root Directory 指向仓库根（或含 `apps/web` 的 monorepo 配置按实际为准）。
+2. 环境变量：
 
 ```bash
-cd kb-system
+NEXT_PUBLIC_API_URL=https://api.verogeo.com
+```
+
+3. 自定义域名（如 `rag.webch.cn`）：在 Vercel Domains 添加后，DNS 配 A/`CNAME` 到 Vercel。
+
+### Dokploy（后端）
+
+1. Compose 源使用仓库根目录：`./docker-compose.dokploy.yml`。
+2. Git 建议用 **SSH Deploy Key** 拉代码（国内机房 HTTPS 易 TLS 中断），分支 `main`。
+3. 关键环境变量见下文；改 `CORS_ORIGINS` / `ACCESS_TOKEN` 后需重建/重启 API。
+
+### 必配环境变量（生产）
+
+```bash
+# 模型（必填）
+DASHSCOPE_API_KEY=sk-xxx
+# 或 OPENAI_API_KEY=sk-xxx（OpenAI 兼容，与上者二选一，优先 OPENAI_API_KEY）
+
+# 前端来源，逗号分隔（须含实际访问域名，注意拼写）
+CORS_ORIGINS=https://rag.webch.cn,https://dusty-kb-three.vercel.app,http://localhost:3000
+
+# 站点口令（推荐）。设置后前端显示解锁页，请求需 Bearer
+ACCESS_TOKEN=your-long-random-secret
+
+# 可选：rerank 顶分低于此值则不调用 LLM，返回友好「相关度不够」文案；0=关闭
+ANSWER_MIN_SCORE=0.12
+```
+
+## 能力概览
+
+| 模块 | 说明 |
+|------|------|
+| 文库 / 文档 | 创建文库、上传、异步索引、进度与失败原因、重新索引 |
+| 解析 | PDF 优先 PyMuPDF，失败回退 pypdf；扫描件/乱码质量门禁（暂不支持 OCR） |
+| 检索 | 稠密向量 + 本地 BM25 + RRF 融合，再 DashScope Rerank |
+| 问答 | 流式回答、引用片段；无命中/弱相关有分场景友好文案 |
+| 访问控制 | 共享 `ACCESS_TOKEN`；知识库带 `owner_id`（非多租户 Clerk） |
+| 前端 | 问答台 / 文库 / 档案 / 看板；移动端抽屉与吸底输入 |
+
+支持文件：`.txt` / `.md` / `.pdf` / `.csv` / `.tsv` / `.xlsx`
+
+## 本地 Docker 一键启动
+
+```bash
 cp .env.example .env
-# 编辑 .env，填入 OPENAI_API_KEY 或 DASHSCOPE_API_KEY（DashScope API Key，必填）
+# 填入 DASHSCOPE_API_KEY 或 OPENAI_API_KEY
 docker compose up --build -d
 ```
 
-访问：
-
-- Web UI: [http://localhost:3000](http://localhost:3000)
-- API: [http://localhost:8000/health](http://localhost:8000/health)
+- Web：[http://localhost:3000](http://localhost:3000)
+- API 健康检查：[http://localhost:8000/health](http://localhost:8000/health)
 
 ### 数据持久化
 
-| 数据 | 存储位置 |
-|------|----------|
-| 上传文件 | Docker 卷 `api_data` → 容器内 `/app/data/uploads/{kb_id}/` |
-| PostgreSQL 元数据 | Docker 卷 `postgres_data` |
-| Qdrant 向量 | Docker 卷 `qdrant_data` |
+| 数据 | 位置 |
+|------|------|
+| 上传文件 | 卷 `api_data` → `/app/data/uploads/{kb_id}/` |
+| 元数据 | 卷 `postgres_data` |
+| 向量 | 卷 `qdrant_data` |
 
-若希望在本机目录直接查看上传文件，可复制 override 示例：
+本机查看上传文件：
 
 ```bash
 cp docker-compose.override.example.yml docker-compose.override.yml
 docker compose up -d
 ```
 
-这会把 `./data` 绑定到容器 `/app/data`（覆盖默认的 `api_data` 卷）。
-
-### 环境变量说明
-
-- `OPENAI_API_KEY` 或 `DASHSCOPE_API_KEY`：**必填**，用于 Embedding / Chat / Rerank
-- `docker-compose.yml` 会自动覆盖 `DATABASE_URL`、`QDRANT_URL`、`DATA_DIR` 为容器内地址
-- `NEXT_PUBLIC_API_URL` 在构建 Web 镜像时设为 `http://localhost:8000`（浏览器访问 API 的地址）
-
-查看日志 / 停止：
-
 ```bash
 docker compose logs -f api
-docker compose down          # 保留数据卷
-docker compose down -v       # 删除所有数据卷（慎用）
+docker compose down          # 保留卷
+docker compose down -v       # 清空卷（慎用）
 ```
 
 ## 本地开发
 
-### 1. 启动 PostgreSQL + Qdrant
+### 1. Postgres + Qdrant
 
 ```bash
-cd kb-system
 docker compose up -d postgres qdrant
 ```
 
-`docker-compose.yml` 会同时启动：
-
-- PostgreSQL：保存知识库、文档元数据和问答日志
-- Qdrant：保存文档 chunk 和向量
-
-上传的原始文件仍保存在 `apps/api/data/uploads/`。如果目录里已经有旧版
-`knowledge_bases.json` / `documents.json`，后端启动时会自动迁移到 PostgreSQL。
-
-### 2. 配置后端
+### 2. API
 
 ```bash
 cd apps/api
 cp ../../.env.example .env
-# 编辑 .env，填入 OPENAI_API_KEY（DashScope API Key）
+# 填入 DASHSCOPE_API_KEY
 uv sync --python /opt/homebrew/bin/python3.12
 PYTHONPATH=. uv run --python /opt/homebrew/bin/python3.12 uvicorn app.main:app --reload --port 8000
 ```
 
-### 3. 启动前端
+若存在旧版 `knowledge_bases.json` / `documents.json`，启动时会迁移到 PostgreSQL。上传文件目录：`apps/api/data/uploads/`。
+
+### 3. Web
 
 ```bash
 cd apps/web
 cp .env.local.example .env.local
+# NEXT_PUBLIC_API_URL=http://localhost:8000
 pnpm dev
 ```
 
 打开 [http://localhost:3000](http://localhost:3000)。
 
-## API
+## API 摘要
 
-生产环境建议设置 `ACCESS_TOKEN`：API 需 `Authorization: Bearer <token>`，前端会显示解锁页。未设置时保持开放（适合本地开发）。新建知识库会写入 `owner_id`（由令牌派生），列表按归属过滤；旧数据 `owner_id` 为空时仍对已解锁用户可见。
+生产环境建议设置 `ACCESS_TOKEN`：请求头 `Authorization: Bearer <token>`。未设置则开放（适合本地）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
 | GET | `/api/auth/status` | 是否要求访问令牌 |
-| GET/POST | `/api/kb` | 知识库列表 / 创建 |
+| GET/POST | `/api/kb` | 文库列表 / 创建 |
 | GET | `/api/kb/{id}/docs` | 文档列表 |
-| GET | `/api/kb/{id}/query-logs` | 问答日志 |
+| GET | `/api/kb/{id}/query-logs` | 问答档案 |
 | POST | `/api/docs/upload` | 上传入库（form: `kb_id`, `file`） |
 | DELETE | `/api/docs/{id}` | 删除文档 |
-| POST | `/api/query` | 问答（JSON: `kb_id`, `question`） |
+| POST | `/api/docs/{id}/reindex` | 重新索引 |
+| POST | `/api/query` | 同步问答 |
+| POST | `/api/query/stream` | 流式问答（SSE） |
 
-支持文件：`.txt` / `.md` / `.pdf` / `.csv` / `.tsv` / `.xlsx`
+## 模型与检索默认值
 
-## 模型说明
+| 项 | 默认 |
+|----|------|
+| Embedding | `text-embedding-v3`（1024 维） |
+| Rerank | `qwen3-rerank`（召回 20 → 重排 6） |
+| Chat | `qwen-plus` |
+| 弱相关门槛 | `ANSWER_MIN_SCORE=0.12`（仅成功 rerank 后生效） |
 
-默认走 DashScope OpenAI 兼容接口：
-
-- Embedding: `text-embedding-v3`（1024 维）
-- Rerank: `qwen3-rerank`（先召回 `RETRIEVE_TOP_K=20`，再重排到 `RERANK_TOP_K=6`）
-- Chat: `qwen-plus`
-
-Key 放在 `apps/api/.env` 的 `DASHSCOPE_API_KEY`。
+Key 写在 `apps/api/.env` 的 `DASHSCOPE_API_KEY`（或 `OPENAI_API_KEY`）。完整变量见 `.env.example`。
 
 ## 测试
 
@@ -143,3 +170,9 @@ cd apps/api
 uv sync --python /opt/homebrew/bin/python3.12 --group dev
 PYTHONPATH=. uv run --python /opt/homebrew/bin/python3.12 pytest
 ```
+
+## 路线图（简）
+
+- 已做：异步入库、中文 PDF 质量门禁、混合检索、流式问答、站点口令、问答空状态与弱相关文案
+- 可选下一步：无命中轻量改写再检索、答后校验；扫清 OCR；多用户（Clerk）——按真实需求再上
+- 复杂 Agent 编排可评估 LangGraph；日常 RAG 不必引入 LangChain
