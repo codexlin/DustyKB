@@ -74,12 +74,12 @@ export function HistoryPanel({
       </CardHeader>
       <CardContent className="min-h-0 flex-1">
         <ScrollArea className="h-full pr-3">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid items-start gap-3 md:grid-cols-2">
             {loading ? <div className="md:col-span-2"><HistoryListSkeleton /></div> : null}
             {queryLogs.map((log) => (
               <Card
                 key={log.id}
-                className="border border-primary/25 bg-background/70 shadow-[4px_4px_0_rgba(67,45,27,0.08)]"
+                className="h-fit self-start border border-primary/25 bg-background/70 shadow-[4px_4px_0_rgba(67,45,27,0.08)]"
                 size="sm"
               >
                 <details
