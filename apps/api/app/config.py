@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_model: str = "text-embedding-v3"
+    # DashScope text-embedding-v3 rejects batches larger than 10
+    embedding_batch_size: int = 10
     chat_model: str = "qwen-plus"
     rerank_enabled: bool = True
     rerank_base_url: str = "https://dashscope.aliyuncs.com/compatible-api/v1"
@@ -35,6 +37,11 @@ class Settings(BaseSettings):
     chunk_overlap: int = 80
     retrieve_top_k: int = 20
     rerank_top_k: int = 6
+
+    # Hybrid retrieval: Qdrant dense + local BM25 + RRF, then existing DashScope rerank
+    hybrid_enabled: bool = True
+    bm25_top_k: int = 20
+    rrf_k: int = 60
 
     @property
     def cors_origin_list(self) -> list[str]:

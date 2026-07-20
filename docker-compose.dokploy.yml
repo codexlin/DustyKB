@@ -1,0 +1,97 @@
+# DustyKB backend for Dokploy + Traefik
+# Web frontend is deployed separately on Vercel.
+# Public API: https://api.verogeo.com
+#
+# Services: postgres + qdrant + api
+# - No host binds on 3000/5432/80/443 (avoids conflicts with Dokploy/VeroGeo)
+# - Joins external dokploy-network for Traefik routing
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kb_system
+      POSTGRES_USER: kb_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kb_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb_user -d kb_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - default
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - default
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://kb_user:${POSTGRES_PASSWORD:-kb_password}@postgres:5432/kb_system
+      QDRANT_URL: http://qdrant:6333
+      DATA_DIR: /app/data
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost:3000}
+    volumes:
+      - api_data:/app/data
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.dustykb-api-web.rule=Host(`api.verogeo.com`)
+      - traefik.http.routers.dustykb-api-web.entrypoints=web
+      - traefik.http.routers.dustykb-api-web.middlewares=redirect-to-https@file
+      - traefik.http.routers.dustykb-api-web.service=dustykb-api
+      - traefik.http.routers.dustykb-api-secure.rule=Host(`api.verogeo.com`)
+      - traefik.http.routers.dustykb-api-secure.entrypoints=websecure
+      - traefik.http.routers.dustykb-api-secure.tls.certresolver=letsencrypt
+      - traefik.http.routers.dustykb-api-secure.service=dustykb-api
+      - traefik.http.services.dustykb-api.loadbalancer.server.port=8000
+    networks:
+      - default
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  api_data:

@@ -25,6 +25,11 @@ export type DocumentChunk = {
   filename: string;
   chunk_index: number;
   text: string;
+  content_type: string;
+  parser: string;
+  page?: number | null;
+  section?: string | null;
+  metadata: Record<string, unknown>;
 };
 
 export type DocumentPreview = {
@@ -43,6 +48,15 @@ export type SourceCitation = {
   chunk_index: number;
   score: number;
   text: string;
+  content_type: string;
+  parser: string;
+  page?: number | null;
+  section?: string | null;
+  metadata: Record<string, unknown>;
+  dense_score?: number | null;
+  bm25_score?: number | null;
+  rrf_score?: number | null;
+  vector_score?: number | null;
 };
 
 export type QueryResult = {

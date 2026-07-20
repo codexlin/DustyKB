@@ -25,21 +25,27 @@ class EmbeddingClient:
         if not texts:
             return []
         started = time.perf_counter()
-        response = self.client.embeddings.create(
-            model=self.settings.embedding_model,
-            input=texts,
-            dimensions=self.settings.embedding_dim,
-        )
-        # API may return out of order; sort by index when present
-        items = sorted(response.data, key=lambda item: getattr(item, "index", 0))
+        batch_size = max(1, int(self.settings.embedding_batch_size))
+        vectors: list[list[float]] = []
+        for offset in range(0, len(texts), batch_size):
+            batch = texts[offset : offset + batch_size]
+            response = self.client.embeddings.create(
+                model=self.settings.embedding_model,
+                input=batch,
+                dimensions=self.settings.embedding_dim,
+            )
+            # API may return out of order; sort by index when present
+            items = sorted(response.data, key=lambda item: getattr(item, "index", 0))
+            vectors.extend(list(item.embedding) for item in items)
         logger.info(
-            "llm.embedding model=%s inputs=%s dim=%s duration_ms=%.1f",
+            "llm.embedding model=%s inputs=%s batches=%s dim=%s duration_ms=%.1f",
             self.settings.embedding_model,
             len(texts),
-            len(items[0].embedding) if items else 0,
+            (len(texts) + batch_size - 1) // batch_size,
+            len(vectors[0]) if vectors else 0,
             (time.perf_counter() - started) * 1000,
         )
-        return [list(item.embedding) for item in items]
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed_texts([text])[0]

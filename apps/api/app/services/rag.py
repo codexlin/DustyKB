@@ -2,28 +2,35 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 from typing import Optional
 import uuid
 
 from app.config import Settings
 from app.schemas import DocumentRecord, QueryResponse, SourceCitation
 from app.services.chunking import chunk_text
-from app.services.documents import extract_text
+from app.services.documents import ParsedBlock, parse_document
+from app.services.hybrid import Bm25IndexCache, fuse_dense_and_bm25
 from app.services.llm import ChatClient, EmbeddingClient, RerankClient
+from app.services.chunk_store import ChunkStore
 from app.services.qdrant_store import QdrantStore
 from app.services.store import MetadataStore
 
 logger = logging.getLogger(__name__)
+
+_bm25_cache = Bm25IndexCache()
 
 
 class RagService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.meta = MetadataStore(settings)
+        self.chunks = ChunkStore(settings)
         self.vectors = QdrantStore(settings)
         self.embeddings = EmbeddingClient(settings)
         self.chat = ChatClient(settings)
         self.reranker = RerankClient(settings) if settings.rerank_enabled else None
+        self.bm25_cache = _bm25_cache
 
     def ingest_file(
         self,
@@ -44,16 +51,17 @@ class RagService:
         if self.meta.get_kb(kb_id) is None:
             raise ValueError("Knowledge base not found")
 
-        text = extract_text(filename, content).strip()
-        logger.info("rag.ingest.extract filename=%s chars=%s", filename, len(text))
-        if not text:
+        parsed = parse_document(filename, content)
+        logger.info(
+            "rag.ingest.extract filename=%s blocks=%s chars=%s",
+            filename,
+            len(parsed.blocks),
+            len(parsed.text),
+        )
+        if not parsed.text.strip():
             raise ValueError("No extractable text in file")
 
-        chunks = chunk_text(
-            text,
-            chunk_size=self.settings.chunk_size,
-            chunk_overlap=self.settings.chunk_overlap,
-        )
+        chunks = self._chunks_from_blocks(parsed.blocks)
         logger.info(
             "rag.ingest.chunk filename=%s chunks=%s chunk_size=%s overlap=%s",
             filename,
@@ -77,7 +85,7 @@ class RagService:
         self.meta.add_doc(doc)
 
         try:
-            self._index_chunks(doc=doc, chunks=[(chunk.index, chunk.text) for chunk in chunks])
+            self._index_chunks(doc=doc, chunks=chunks)
         except Exception as exc:
             self.meta.update_doc_status(doc.id, status="failed", error_message=str(exc))
             logger.exception("rag.ingest.failed kb_id=%s doc_id=%s", kb_id, doc.id)
@@ -94,9 +102,38 @@ class RagService:
         )
         return saved
 
-    def _index_chunks(self, *, doc: DocumentRecord, chunks: list[tuple[int, str]]) -> None:
+    def _chunks_from_blocks(self, blocks: list[ParsedBlock]) -> list[dict[str, Any]]:
+        chunks: list[dict[str, Any]] = []
+        next_index = 0
+        for block_index, block in enumerate(blocks):
+            block_chunks = chunk_text(
+                block.text,
+                chunk_size=self.settings.chunk_size,
+                chunk_overlap=self.settings.chunk_overlap,
+            )
+            for block_chunk in block_chunks:
+                chunks.append(
+                    {
+                        "chunk_index": next_index,
+                        "text": block_chunk.text,
+                        "content_type": block.content_type,
+                        "parser": block.parser,
+                        "page": block.page,
+                        "section": block.section,
+                        "metadata": {
+                            "block_index": block_index,
+                            "block_chunk_index": block_chunk.index,
+                            **block.metadata,
+                        },
+                    }
+                )
+                next_index += 1
+        return chunks
+
+    def _index_chunks(self, *, doc: DocumentRecord, chunks: list[dict[str, Any]]) -> None:
+        self.chunks.save_chunks_for_doc(doc_id=doc.id, kb_id=doc.kb_id, chunks=chunks)
         embedding_started = time.perf_counter()
-        vectors = self.embeddings.embed_texts([text for _, text in chunks])
+        vectors = self.embeddings.embed_texts([chunk["text"] for chunk in chunks])
         logger.info(
             "rag.index.embed doc_id=%s chunks=%s duration_ms=%.1f",
             doc.id,
@@ -110,6 +147,7 @@ class RagService:
             chunks=chunks,
             vectors=vectors,
         )
+        self.bm25_cache.invalidate(doc.kb_id)
 
     def reindex_document(self, doc_id: str) -> DocumentRecord:
         started = time.perf_counter()
@@ -124,18 +162,15 @@ class RagService:
         logger.info("rag.reindex.start doc_id=%s kb_id=%s filename=%s", doc.id, doc.kb_id, doc.filename)
         self.meta.update_doc_status(doc.id, status="processing", error_message="")
         try:
-            text = extract_text(doc.filename, path.read_bytes()).strip()
-            if not text:
+            parsed = parse_document(doc.filename, path.read_bytes())
+            if not parsed.text.strip():
                 raise ValueError("No extractable text in file")
-            chunks = chunk_text(
-                text,
-                chunk_size=self.settings.chunk_size,
-                chunk_overlap=self.settings.chunk_overlap,
-            )
+            chunks = self._chunks_from_blocks(parsed.blocks)
             if not chunks:
                 raise ValueError("Document produced no chunks")
+            self.chunks.delete_by_doc(doc.id)
             self.vectors.delete_by_doc(doc.id)
-            self._index_chunks(doc=doc, chunks=[(chunk.index, chunk.text) for chunk in chunks])
+            self._index_chunks(doc=doc, chunks=chunks)
             saved = self.meta.update_doc_status(doc.id, status="ready", chunk_count=len(chunks), error_message="")
         except Exception as exc:
             self.meta.update_doc_status(doc.id, status="failed", error_message=str(exc))
@@ -157,8 +192,68 @@ class RagService:
         if deleted is None:
             raise ValueError("Document not found")
         self.vectors.delete_by_doc(doc_id)
+        self.bm25_cache.invalidate(deleted.kb_id)
         logger.info("rag.delete.end doc_id=%s kb_id=%s", doc_id, deleted.kb_id)
         return deleted
+
+    def _retrieve_hits(
+        self,
+        *,
+        kb_id: str,
+        question: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        logger.info("rag.query.embed kb_id=%s question_len=%s", kb_id, len(question))
+        query_vector = self.embeddings.embed_query(question)
+        search_started = time.perf_counter()
+        dense_hits = self.vectors.search(kb_id=kb_id, query_vector=query_vector, top_k=limit)
+        logger.info(
+            "rag.query.dense kb_id=%s requested_top_k=%s hits=%s duration_ms=%.1f",
+            kb_id,
+            limit,
+            len(dense_hits),
+            (time.perf_counter() - search_started) * 1000,
+        )
+
+        if not self.settings.hybrid_enabled:
+            return dense_hits
+
+        bm25_started = time.perf_counter()
+        index = self.bm25_cache.get_or_build(
+            kb_id,
+            lambda: self.chunks.list_by_kb(kb_id),
+        )
+        bm25_hits = index.search(question, top_k=self.settings.bm25_top_k)
+        logger.info(
+            "rag.query.bm25 kb_id=%s corpus=%s hits=%s duration_ms=%.1f",
+            kb_id,
+            len(index.chunks),
+            len(bm25_hits),
+            (time.perf_counter() - bm25_started) * 1000,
+        )
+
+        if not dense_hits and not bm25_hits:
+            return []
+        if not bm25_hits:
+            return dense_hits
+        if not dense_hits:
+            return bm25_hits[:limit]
+
+        fused = fuse_dense_and_bm25(
+            dense_hits=dense_hits,
+            bm25_hits=bm25_hits,
+            rrf_k=self.settings.rrf_k,
+            limit=limit,
+        )
+        logger.info(
+            "rag.query.rrf kb_id=%s dense=%s bm25=%s fused=%s rrf_k=%s",
+            kb_id,
+            len(dense_hits),
+            len(bm25_hits),
+            len(fused),
+            self.settings.rrf_k,
+        )
+        return fused
 
     def build_context(
         self,
@@ -172,17 +267,7 @@ class RagService:
             raise ValueError("Knowledge base not found")
 
         limit = top_k or self.settings.retrieve_top_k
-        logger.info("rag.query.embed kb_id=%s question_len=%s", kb_id, len(question))
-        query_vector = self.embeddings.embed_query(question)
-        search_started = time.perf_counter()
-        hits = self.vectors.search(kb_id=kb_id, query_vector=query_vector, top_k=limit)
-        logger.info(
-            "rag.query.search kb_id=%s requested_top_k=%s hits=%s duration_ms=%.1f",
-            kb_id,
-            limit,
-            len(hits),
-            (time.perf_counter() - search_started) * 1000,
-        )
+        hits = self._retrieve_hits(kb_id=kb_id, question=question, limit=limit)
 
         if not hits:
             logger.info("rag.query.empty kb_id=%s duration_ms=%.1f", kb_id, (time.perf_counter() - started) * 1000)
@@ -202,7 +287,7 @@ class RagService:
                     if original_index >= len(hits):
                         continue
                     hit = dict(hits[original_index])
-                    hit["vector_score"] = hit["score"]
+                    hit["vector_score"] = hit.get("rrf_score", hit.get("dense_score", hit["score"]))
                     hit["score"] = rerank_score
                     reranked_hits.append(hit)
                 hits = reranked_hits or hits[: self.settings.rerank_top_k]
@@ -234,6 +319,15 @@ class RagService:
                     chunk_index=hit["chunk_index"],
                     score=hit["score"],
                     text=hit["text"],
+                    content_type=hit.get("content_type", "text"),
+                    parser=hit.get("parser", ""),
+                    page=hit.get("page"),
+                    section=hit.get("section"),
+                    metadata=hit.get("metadata", {}),
+                    dense_score=hit.get("dense_score"),
+                    bm25_score=hit.get("bm25_score"),
+                    rrf_score=hit.get("rrf_score"),
+                    vector_score=hit.get("vector_score"),
                 )
             )
 

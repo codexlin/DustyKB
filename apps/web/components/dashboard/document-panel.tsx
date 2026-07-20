@@ -117,7 +117,7 @@ export function DocumentPanel({
             className="sr-only"
             type="file"
             multiple
-            accept=".txt,.md,.markdown,.pdf,.csv"
+            accept=".txt,.md,.markdown,.pdf,.csv,.tsv,.xlsx"
             disabled={!selectedKbId || busy === "upload"}
             onChange={(event) => {
               onUpload(event.target.files);
@@ -133,10 +133,10 @@ export function DocumentPanel({
           </span>
           <span className="space-y-1">
             <span className="block font-medium">
-              {busy === "upload" ? "入库中..." : "上传 TXT / Markdown / PDF"}
+              {busy === "upload" ? "入库中..." : "上传 TXT / Markdown / PDF / CSV / XLSX"}
             </span>
             <span className="block text-xs text-muted-foreground">
-              文件会写入本地 uploads，chunk 和向量进入 Qdrant。
+              文件会解析为结构化 blocks，chunk 和向量进入 Qdrant。
             </span>
           </span>
         </Label>
@@ -423,6 +423,12 @@ export function DocumentPanel({
                         <details key={`${chunk.doc_id}-${chunk.chunk_index}`} className="border border-primary/20 bg-card/60 p-2">
                           <summary className="cursor-pointer font-mono text-xs text-primary">
                             chunk {chunk.chunk_index}
+                            <span className="ml-2 text-muted-foreground">
+                              {chunk.content_type}
+                              {chunk.parser ? ` · ${chunk.parser}` : ""}
+                              {chunk.page ? ` · p.${chunk.page}` : ""}
+                              {chunk.section ? ` · ${chunk.section}` : ""}
+                            </span>
                           </summary>
                           <p className="mt-2 whitespace-pre-wrap font-mono text-xs leading-5 text-muted-foreground">
                             {chunk.text}

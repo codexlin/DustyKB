@@ -17,6 +17,7 @@ from app.logging_config import configure_logging
 from app.schemas import ApiEnvelope, CreateKBRequest, DocumentChunk, DocumentPreview, QueryFeedbackRequest, QueryRequest, ServiceStatus, SystemStatus
 from app.services.llm import ChatClient, EmbeddingClient, RerankClient
 from app.services.documents import extract_text
+from app.services.chunk_store import ChunkStore
 from app.services.qdrant_store import QdrantStore
 from app.services.query_logs import QueryLogStore
 from app.services.rag import RagService
@@ -55,6 +56,15 @@ def get_qdrant_store() -> QdrantStore:
 
 def get_vectors() -> QdrantStore:
     return get_qdrant_store()
+
+
+@lru_cache
+def get_chunk_store() -> ChunkStore:
+    return ChunkStore(get_settings())
+
+
+def get_chunks() -> ChunkStore:
+    return get_chunk_store()
 
 
 def create_app() -> FastAPI:
@@ -181,7 +191,11 @@ def create_app() -> FastAPI:
                 "rerank_enabled": settings.rerank_enabled,
             },
             retrieval={
+                "mode": "hybrid" if settings.hybrid_enabled else "dense",
                 "retrieve_top_k": settings.retrieve_top_k,
+                "bm25_top_k": settings.bm25_top_k,
+                "rrf_k": settings.rrf_k,
+                "hybrid_enabled": settings.hybrid_enabled,
                 "rerank_top_k": settings.rerank_top_k,
             },
             chunking={
@@ -219,6 +233,7 @@ def create_app() -> FastAPI:
         meta: MetadataStore = Depends(get_meta),
         vectors: QdrantStore = Depends(get_vectors),
         logs: QueryLogStore = Depends(get_query_logs),
+        rag: RagService = Depends(get_rag_service),
     ) -> ApiEnvelope:
         kb = meta.get_kb(kb_id)
         if kb is None:
@@ -226,6 +241,7 @@ def create_app() -> FastAPI:
         vectors.delete_by_kb(kb_id)
         logs.delete_by_kb(kb_id)
         deleted = meta.delete_kb(kb_id)
+        rag.bm25_cache.invalidate(kb_id)
         logger.info("kb.delete kb_id=%s name=%s", kb_id, kb.name)
         return ApiEnvelope(data=deleted)
 
@@ -304,13 +320,13 @@ def create_app() -> FastAPI:
     def list_doc_chunks(
         doc_id: str,
         meta: MetadataStore = Depends(get_meta),
-        vectors: QdrantStore = Depends(get_vectors),
+        chunks: ChunkStore = Depends(get_chunks),
     ) -> ApiEnvelope:
         doc = meta.get_doc(doc_id)
         if doc is None:
             raise HTTPException(status_code=404, detail="Document not found")
-        chunks = [DocumentChunk.model_validate(item) for item in vectors.list_chunks_by_doc(doc_id)]
-        return ApiEnvelope(data=chunks)
+        chunk_rows = chunks.list_by_doc(doc_id)
+        return ApiEnvelope(data=[DocumentChunk.model_validate(item) for item in chunk_rows])
 
     @app.get(f"{settings.api_prefix}/docs/{{doc_id}}/preview")
     def preview_doc(

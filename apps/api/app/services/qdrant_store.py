@@ -44,7 +44,7 @@ class QdrantStore:
         kb_id: str,
         doc_id: str,
         filename: str,
-        chunks: list[tuple[int, str]],
+        chunks: list[dict[str, Any]],
         vectors: list[list[float]],
     ) -> int:
         if len(chunks) != len(vectors):
@@ -52,18 +52,26 @@ class QdrantStore:
 
         started = time.perf_counter()
         points: list[qm.PointStruct] = []
-        for (chunk_index, text), vector in zip(chunks, vectors):
+        for chunk, vector in zip(chunks, vectors):
+            payload: dict[str, Any] = {
+                "kb_id": kb_id,
+                "doc_id": doc_id,
+                "filename": filename,
+                "chunk_index": chunk["chunk_index"],
+                "text": chunk["text"],
+                "content_type": chunk.get("content_type", "text"),
+                "parser": chunk.get("parser", ""),
+                "metadata": chunk.get("metadata", {}),
+            }
+            if chunk.get("page") is not None:
+                payload["page"] = chunk["page"]
+            if chunk.get("section"):
+                payload["section"] = chunk["section"]
             points.append(
                 qm.PointStruct(
                     id=str(uuid4()),
                     vector=vector,
-                    payload={
-                        "kb_id": kb_id,
-                        "doc_id": doc_id,
-                        "filename": filename,
-                        "chunk_index": chunk_index,
-                        "text": text,
-                    },
+                    payload=payload,
                 )
             )
         if points:
@@ -100,31 +108,55 @@ class QdrantStore:
         )
         logger.info("qdrant.delete_by_kb collection=%s kb_id=%s", self.collection, kb_id)
 
+    def _payload_to_chunk(self, payload: dict[str, Any], *, default_doc_id: str = "") -> dict[str, Any]:
+        return {
+            "doc_id": payload.get("doc_id", default_doc_id),
+            "filename": payload.get("filename", ""),
+            "chunk_index": int(payload.get("chunk_index", 0)),
+            "text": payload.get("text", ""),
+            "content_type": payload.get("content_type", "text"),
+            "parser": payload.get("parser", ""),
+            "page": payload.get("page"),
+            "section": payload.get("section"),
+            "metadata": payload.get("metadata", {}),
+        }
+
+    def _scroll_chunks(self, *, scroll_filter: qm.Filter, label: str) -> list[dict[str, Any]]:
+        chunks: list[dict[str, Any]] = []
+        next_offset = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=scroll_filter,
+                limit=256,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in points:
+                payload = point.payload or {}
+                chunks.append(self._payload_to_chunk(payload))
+            if next_offset is None:
+                break
+        chunks.sort(key=lambda item: (item["doc_id"], item["chunk_index"]))
+        logger.info("qdrant.list_chunks collection=%s %s chunks=%s", self.collection, label, len(chunks))
+        return chunks
+
     def list_chunks_by_doc(self, doc_id: str) -> list[dict[str, Any]]:
-        response = self.client.scroll(
-            collection_name=self.collection,
+        return self._scroll_chunks(
             scroll_filter=qm.Filter(
                 must=[qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))]
             ),
-            limit=1000,
-            with_payload=True,
-            with_vectors=False,
+            label=f"doc_id={doc_id}",
         )
-        points, _ = response
-        chunks: list[dict[str, Any]] = []
-        for point in points:
-            payload = point.payload or {}
-            chunks.append(
-                {
-                    "doc_id": payload.get("doc_id", doc_id),
-                    "filename": payload.get("filename", ""),
-                    "chunk_index": int(payload.get("chunk_index", 0)),
-                    "text": payload.get("text", ""),
-                }
-            )
-        chunks.sort(key=lambda item: item["chunk_index"])
-        logger.info("qdrant.list_chunks collection=%s doc_id=%s chunks=%s", self.collection, doc_id, len(chunks))
-        return chunks
+
+    def list_chunks_by_kb(self, kb_id: str) -> list[dict[str, Any]]:
+        return self._scroll_chunks(
+            scroll_filter=qm.Filter(
+                must=[qm.FieldCondition(key="kb_id", match=qm.MatchValue(value=kb_id))]
+            ),
+            label=f"kb_id={kb_id}",
+        )
 
     def search(
         self,
@@ -153,6 +185,11 @@ class QdrantStore:
                     "filename": payload.get("filename", ""),
                     "chunk_index": int(payload.get("chunk_index", 0)),
                     "text": payload.get("text", ""),
+                    "content_type": payload.get("content_type", "text"),
+                    "parser": payload.get("parser", ""),
+                    "page": payload.get("page"),
+                    "section": payload.get("section"),
+                    "metadata": payload.get("metadata", {}),
                 }
             )
         scores = [round(item["score"], 4) for item in results[:3]]

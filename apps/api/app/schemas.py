@@ -67,6 +67,15 @@ class SourceCitation(BaseModel):
     chunk_index: int
     score: float
     text: str
+    content_type: str = "text"
+    parser: str = ""
+    page: Optional[int] = None
+    section: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    dense_score: Optional[float] = None
+    bm25_score: Optional[float] = None
+    rrf_score: Optional[float] = None
+    vector_score: Optional[float] = None
 
 
 class DocumentChunk(BaseModel):
@@ -74,6 +83,11 @@ class DocumentChunk(BaseModel):
     filename: str
     chunk_index: int
     text: str
+    content_type: str = "text"
+    parser: str = ""
+    page: Optional[int] = None
+    section: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DocumentPreview(BaseModel):

@@ -1,0 +1,9 @@
+# Optional: copy to docker-compose.override.yml to bind-mount uploads locally
+# instead of using the named volume `api_data`.
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#
+services:
+  api:
+    volumes:
+      - ./data:/app/data

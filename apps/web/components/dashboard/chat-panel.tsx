@@ -53,7 +53,7 @@ export function ChatPanel({
               <MessageSquare className="size-4 text-primary" /> 问答
             </CardTitle>
             <CardDescription>
-              {selectedKb ? "Qdrant Top20 → qwen3-rerank → Qwen 生成" : "请先选择知识库"}
+              {selectedKb ? "Dense+BM25 → RRF → qwen3-rerank → Qwen 生成" : "请先选择知识库"}
             </CardDescription>
           </div>
           <Badge variant="secondary" className="rounded-none font-mono tracking-[0.16em]">RAG</Badge>
@@ -118,11 +118,38 @@ export function ChatPanel({
                               >
                                 <span className="min-w-0 truncate text-xs">
                                   {source.filename} · chunk {source.chunk_index}
+                                  {source.section ? ` · ${source.section}` : ""}
+                                  {source.page ? ` · p.${source.page}` : ""}
                                 </span>
                                 <Badge variant="outline" className="rounded-none font-mono">{source.score.toFixed(3)}</Badge>
                               </Button>
                               {isOpen ? (
                                 <div className="mt-2 space-y-2 border-l-4 border-primary/30 bg-muted/60 p-2">
+                                  <div className="flex flex-wrap gap-1.5">
+                                    <Badge variant="outline" className="rounded-none font-mono">
+                                      {source.content_type || "text"}
+                                    </Badge>
+                                    {source.parser ? (
+                                      <Badge variant="outline" className="rounded-none font-mono">
+                                        {source.parser}
+                                      </Badge>
+                                    ) : null}
+                                    {source.dense_score != null ? (
+                                      <Badge variant="outline" className="rounded-none font-mono">
+                                        dense {source.dense_score.toFixed(3)}
+                                      </Badge>
+                                    ) : null}
+                                    {source.bm25_score != null ? (
+                                      <Badge variant="outline" className="rounded-none font-mono">
+                                        bm25 {source.bm25_score.toFixed(2)}
+                                      </Badge>
+                                    ) : null}
+                                    {source.rrf_score != null ? (
+                                      <Badge variant="outline" className="rounded-none font-mono">
+                                        rrf {source.rrf_score.toFixed(4)}
+                                      </Badge>
+                                    ) : null}
+                                  </div>
                                   <SourceMatchNote text={source.text} question={turn.question} score={source.score} />
                                   <p className="whitespace-pre-wrap font-mono text-xs leading-5 text-muted-foreground">
                                     <HighlightText text={source.text} question={turn.question} />
