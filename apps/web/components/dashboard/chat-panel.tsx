@@ -1,17 +1,19 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type KeyboardEvent, type SyntheticEvent } from "react";
-import { ChevronDown, Loader2, MessageSquare, Search, Square } from "lucide-react";
+import Link from "next/link";
+import { Archive, ChevronDown, FileText, Loader2, MessageSquare, Search, Square } from "lucide-react";
 
 import { HighlightText, SourceMatchNote } from "@/components/highlight-text";
 import { MarkdownAnswer } from "@/components/markdown-answer";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { EmptyState, QualityPanel } from "@/components/dashboard/shared";
+import { QualityPanel } from "@/components/dashboard/shared";
 import type { KnowledgeBase, QueryResult } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 export type ChatTurn = {
   id: string;
@@ -28,9 +30,155 @@ function answerPreview(text: string, max = 96) {
   return `${compact.slice(0, max)}…`;
 }
 
+type ChatGuide = {
+  title: string;
+  description: string;
+  headerHint: string;
+  placeholder: string;
+  ctaHref?: string;
+  ctaLabel?: string;
+  tone: "welcome" | "nudge" | "wait" | "ready";
+  canAsk: boolean;
+};
+
+function resolveChatGuide({
+  kbCount,
+  selectedKb,
+  selectedKbId,
+  docCount,
+  readyDocCount,
+  processingDocCount,
+  loadingDocs,
+}: {
+  kbCount: number;
+  selectedKb: KnowledgeBase | null;
+  selectedKbId: string;
+  docCount: number;
+  readyDocCount: number;
+  processingDocCount: number;
+  loadingDocs: boolean;
+}): ChatGuide {
+  if (kbCount === 0) {
+    return {
+      title: "先给知识安个家吧",
+      description: "建一个文库，就像开一排书架——之后放进去的资料，都能在这里追问。",
+      headerHint: "问答台还空着，从建文库开始",
+      placeholder: "建好文库后，再来聊你的问题…",
+      ctaHref: "/documents",
+      ctaLabel: "建一个文库",
+      tone: "welcome",
+      canAsk: false,
+    };
+  }
+
+  if (!selectedKbId || !selectedKb) {
+    return {
+      title: "选一本要翻的书",
+      description: "右侧点一下文库，问答台就会跟着切换——一次只对着一份资料说话。",
+      headerHint: "选好文库，再开始提问",
+      placeholder: "选好文库后，就可以提问了…",
+      tone: "nudge",
+      canAsk: false,
+    };
+  }
+
+  if (loadingDocs && docCount === 0) {
+    return {
+      title: "正在翻开这本文库…",
+      description: "资料目录马上就好，稍等片刻就能提问。",
+      headerHint: `正在打开「${selectedKb.name}」`,
+      placeholder: "马上就好…",
+      tone: "wait",
+      canAsk: false,
+    };
+  }
+
+  if (docCount === 0) {
+    return {
+      title: "书架还是空的",
+      description: `「${selectedKb.name}」里还没有资料。先放进几份文档，问答才有据可依。`,
+      headerHint: `「${selectedKb.name}」还没有收录资料`,
+      placeholder: "收录几份资料后，再来提问…",
+      ctaHref: `/kb/${selectedKbId}/documents`,
+      ctaLabel: "去收录资料",
+      tone: "nudge",
+      canAsk: false,
+    };
+  }
+
+  if (readyDocCount === 0 && processingDocCount > 0) {
+    return {
+      title: "资料正在整理中",
+      description: "我们在把文档拆成可检索的片段，好了之后就能按原文回答你。",
+      headerHint: `「${selectedKb.name}」正在整理资料`,
+      placeholder: "整理好后，再来提问…",
+      ctaHref: `/kb/${selectedKbId}/documents`,
+      ctaLabel: "看看进度",
+      tone: "wait",
+      canAsk: false,
+    };
+  }
+
+  if (readyDocCount === 0) {
+    return {
+      title: "这份资料还读不进去",
+      description: "文库里有文档，但还不能用来回答。去文库页看一眼状态，必要时重新整理一下。",
+      headerHint: `「${selectedKb.name}」里的资料还没准备好`,
+      placeholder: "资料就绪后，再来提问…",
+      ctaHref: `/kb/${selectedKbId}/documents`,
+      ctaLabel: "去文库看看",
+      tone: "nudge",
+      canAsk: false,
+    };
+  }
+
+  const docLabel = readyDocCount === 1 ? "1 份资料" : `${readyDocCount} 份资料`;
+  return {
+    title: "今天想问点什么？",
+    description: `「${selectedKb.name}」里已有 ${docLabel} 就绪。直接提问就好，答案旁边会附上出处，方便你核对。`,
+    headerHint: `对着「${selectedKb.name}」提问，答案会附上原文出处`,
+    placeholder: "例如：这份文档里怎么说的？",
+    tone: "ready",
+    canAsk: true,
+  };
+}
+
+function ChatEmptyGuide({ guide }: { guide: ChatGuide }) {
+  const ToneIcon =
+    guide.tone === "welcome" ? Archive : guide.tone === "wait" ? Loader2 : guide.tone === "ready" ? MessageSquare : FileText;
+
+  return (
+    <div className="flex flex-col items-center gap-4 border border-dashed border-primary/30 bg-background/45 px-5 py-8 text-center">
+      <div className="flex size-11 items-center justify-center border border-primary/25 bg-card/70 shadow-[3px_3px_0_rgba(67,45,27,0.08)]">
+        <ToneIcon className={cn("size-5 text-primary", guide.tone === "wait" && "animate-spin")} />
+      </div>
+      <div className="max-w-sm space-y-2">
+        <p className="font-heading text-base font-semibold tracking-tight text-foreground">{guide.title}</p>
+        <p className="text-sm leading-6 text-muted-foreground">{guide.description}</p>
+      </div>
+      {guide.ctaHref && guide.ctaLabel ? (
+        <Link
+          href={guide.ctaHref}
+          className={cn(
+            buttonVariants({ variant: "secondary", size: "sm" }),
+            "rounded-none border border-primary/30 font-mono",
+          )}
+        >
+          {guide.ctaLabel}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
 export function ChatPanel({
   selectedKb,
   selectedKbId,
+  kbCount = 0,
+  docCount = 0,
+  readyDocCount = 0,
+  processingDocCount = 0,
+  loadingDocs = false,
   question,
   turns,
   busy,
@@ -43,6 +191,11 @@ export function ChatPanel({
 }: {
   selectedKb: KnowledgeBase | null;
   selectedKbId: string;
+  kbCount?: number;
+  docCount?: number;
+  readyDocCount?: number;
+  processingDocCount?: number;
+  loadingDocs?: boolean;
   question: string;
   turns: ChatTurn[];
   busy: string | null;
@@ -56,7 +209,16 @@ export function ChatPanel({
   const [openTurnId, setOpenTurnId] = useState<string | null>(null);
   const latestTurnId = turns[0]?.id ?? null;
   const isQuerying = busy === "query";
-  const canSubmit = Boolean(selectedKbId && question.trim() && !isQuerying);
+  const guide = resolveChatGuide({
+    kbCount,
+    selectedKb,
+    selectedKbId,
+    docCount,
+    readyDocCount,
+    processingDocCount,
+    loadingDocs,
+  });
+  const canSubmit = Boolean(guide.canAsk && selectedKbId && question.trim() && !isQuerying);
 
   useEffect(() => {
     if (latestTurnId) setOpenTurnId(latestTurnId);
@@ -82,9 +244,7 @@ export function ChatPanel({
             <CardTitle className="flex items-center gap-2">
               <MessageSquare className="size-4 text-primary" /> 问答
             </CardTitle>
-            <CardDescription className="hidden sm:block">
-              {selectedKb ? "依据当前文库作答，并附上原文出处" : "请先选择一个文库"}
-            </CardDescription>
+            <CardDescription className="hidden sm:block">{guide.headerHint}</CardDescription>
           </div>
           <Badge variant="secondary" className="rounded-none font-mono tracking-[0.16em]">问答</Badge>
         </div>
@@ -249,7 +409,7 @@ export function ChatPanel({
                 </Card>
               );
             })}
-            {!turns.length ? <EmptyState text="上传文档后，就可以在这里开始提问。" /> : null}
+            {!turns.length ? <ChatEmptyGuide guide={guide} /> : null}
           </div>
         </ScrollArea>
 
@@ -262,9 +422,9 @@ export function ChatPanel({
             value={question}
             onChange={(event) => onQuestionChange(event.target.value)}
             onKeyDown={onComposerKeyDown}
-            placeholder={selectedKbId ? "输入你的问题…" : "请先选择文库"}
+            placeholder={guide.placeholder}
             rows={2}
-            disabled={!selectedKbId}
+            disabled={!guide.canAsk}
           />
           <div className="flex items-center justify-between gap-3 border-t border-primary/20 bg-muted/45 px-2 py-2">
             <p className="hidden font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground md:block">

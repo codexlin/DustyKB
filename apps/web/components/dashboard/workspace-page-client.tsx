@@ -48,7 +48,8 @@ export function WorkspacePageClient() {
 
   async function onAsk(event: FormEvent) {
     event.preventDefault();
-    if (!kb.selectedKbId || !question.trim() || busy === "query") return;
+    const readyDocs = docs.docs.filter((doc) => doc.status === "ready");
+    if (!kb.selectedKbId || !question.trim() || busy === "query" || !readyDocs.length) return;
 
     const turnId = crypto.randomUUID();
     const currentQuestion = question.trim();
@@ -189,6 +190,11 @@ export function WorkspacePageClient() {
           <ChatPanel
             selectedKb={kb.selectedKb}
             selectedKbId={kb.selectedKbId}
+            kbCount={kb.kbs.length}
+            docCount={docs.docs.length}
+            readyDocCount={docs.docs.filter((doc) => doc.status === "ready").length}
+            processingDocCount={docs.docs.filter((doc) => doc.status === "processing").length}
+            loadingDocs={docs.loading}
             question={question}
             turns={turns}
             busy={busy}
