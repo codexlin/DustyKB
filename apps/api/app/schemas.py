@@ -14,8 +14,15 @@ class KnowledgeBase(BaseModel):
     id: str
     name: str
     description: str = ""
+    owner_id: str = ""
     created_at: str = Field(default_factory=utc_now_iso)
     doc_count: int = 0
+
+
+class AuthStatus(BaseModel):
+    required: bool
+    authenticated: bool
+    owner_id: str = ""
 
 
 class DocumentRecord(BaseModel):

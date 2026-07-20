@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     app_name: str = "DustyKB API"
     api_prefix: str = "/api"
     cors_origins: str = "http://localhost:3000"
+    # Shared site access token. Empty = open (local dev). Set in production.
+    access_token: str = ""
 
     data_dir: str = "./data"
     database_url: str = "postgresql://kb_user:kb_password@localhost:5432/kb_system"

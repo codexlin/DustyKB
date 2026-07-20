@@ -10,11 +10,24 @@ import httpx
 import psycopg
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from app.auth import Principal, auth_required, is_public_path, resolve_principal
 from app.config import Settings, get_settings
 from app.logging_config import configure_logging
-from app.schemas import ApiEnvelope, CreateKBRequest, DocumentChunk, DocumentPreview, QueryFeedbackRequest, QueryRequest, ServiceStatus, SystemStatus
+from app.schemas import (
+    ApiEnvelope,
+    AuthStatus,
+    CreateKBRequest,
+    DocumentChunk,
+    DocumentPreview,
+    DocumentRecord,
+    KnowledgeBase,
+    QueryFeedbackRequest,
+    QueryRequest,
+    ServiceStatus,
+    SystemStatus,
+)
 from app.services.llm import ChatClient, EmbeddingClient, RerankClient
 from app.services.documents import extract_text
 from app.services.chunk_store import ChunkStore
@@ -24,6 +37,28 @@ from app.services.rag import RagService
 from app.services.store import MetadataStore
 
 logger = logging.getLogger(__name__)
+
+
+def get_principal(request: Request) -> Principal:
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return principal
+
+
+def require_kb(meta: MetadataStore, kb_id: str, principal: Principal) -> KnowledgeBase:
+    try:
+        return meta.assert_kb_access(kb_id, principal.owner_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def require_doc(meta: MetadataStore, doc_id: str, principal: Principal) -> DocumentRecord:
+    doc = meta.get_doc(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    require_kb(meta, doc.kb_id, principal)
+    return doc
 
 
 @lru_cache
@@ -89,6 +124,16 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
+    async def authenticate_requests(request: Request, call_next):
+        if request.method == "OPTIONS" or is_public_path(request.url.path):
+            return await call_next(request)
+        try:
+            request.state.principal = resolve_principal(settings, request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return await call_next(request)
+
+    @app.middleware("http")
     async def log_requests(request: Request, call_next):
         request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
         start = time.perf_counter()
@@ -127,6 +172,22 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get(f"{settings.api_prefix}/auth/status")
+    def auth_status(request: Request) -> ApiEnvelope:
+        required = auth_required(settings)
+        if not required:
+            principal = resolve_principal(settings, request)
+            return ApiEnvelope(
+                data=AuthStatus(required=False, authenticated=True, owner_id=principal.owner_id)
+            )
+        try:
+            principal = resolve_principal(settings, request)
+            return ApiEnvelope(
+                data=AuthStatus(required=True, authenticated=True, owner_id=principal.owner_id)
+            )
+        except HTTPException:
+            return ApiEnvelope(data=AuthStatus(required=True, authenticated=False, owner_id=""))
+
     def check_service(name: str, probe) -> ServiceStatus:
         started = time.perf_counter()
         try:
@@ -147,7 +208,7 @@ def create_app() -> FastAPI:
             )
 
     @app.get(f"{settings.api_prefix}/system/status")
-    def system_status(deep: bool = False) -> ApiEnvelope:
+    def system_status(deep: bool = False, _principal: Principal = Depends(get_principal)) -> ApiEnvelope:
         def postgres_probe() -> str:
             with psycopg.connect(settings.database_url) as conn:
                 with conn.cursor() as cur:
@@ -221,18 +282,22 @@ def create_app() -> FastAPI:
         return ApiEnvelope(data=payload)
 
     @app.get(f"{settings.api_prefix}/kb")
-    def list_kb(meta: MetadataStore = Depends(get_meta)) -> ApiEnvelope:
-        kbs = meta.list_kbs()
-        logger.info("kb.list count=%s", len(kbs))
+    def list_kb(
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
+    ) -> ApiEnvelope:
+        kbs = meta.list_kbs(owner_id=principal.owner_id)
+        logger.info("kb.list count=%s owner_id=%s", len(kbs), principal.owner_id)
         return ApiEnvelope(data=kbs)
 
     @app.post(f"{settings.api_prefix}/kb")
     def create_kb(
         body: CreateKBRequest,
         meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
-        kb = meta.create_kb(body.name, body.description)
-        logger.info("kb.create kb_id=%s name=%s", kb.id, kb.name)
+        kb = meta.create_kb(body.name, body.description, owner_id=principal.owner_id)
+        logger.info("kb.create kb_id=%s name=%s owner_id=%s", kb.id, kb.name, kb.owner_id)
         return ApiEnvelope(data=kb)
 
     @app.delete(f"{settings.api_prefix}/kb/{{kb_id}}")
@@ -242,10 +307,9 @@ def create_app() -> FastAPI:
         vectors: QdrantStore = Depends(get_vectors),
         logs: QueryLogStore = Depends(get_query_logs),
         rag: RagService = Depends(get_rag_service),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
-        kb = meta.get_kb(kb_id)
-        if kb is None:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        kb = require_kb(meta, kb_id, principal)
         vectors.delete_by_kb(kb_id)
         logs.delete_by_kb(kb_id)
         deleted = meta.delete_kb(kb_id)
@@ -254,9 +318,12 @@ def create_app() -> FastAPI:
         return ApiEnvelope(data=deleted)
 
     @app.get(f"{settings.api_prefix}/kb/{{kb_id}}/docs")
-    def list_docs(kb_id: str, meta: MetadataStore = Depends(get_meta)) -> ApiEnvelope:
-        if meta.get_kb(kb_id) is None:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+    def list_docs(
+        kb_id: str,
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
+    ) -> ApiEnvelope:
+        require_kb(meta, kb_id, principal)
         docs = meta.list_docs(kb_id)
         logger.info("docs.list kb_id=%s count=%s", kb_id, len(docs))
         return ApiEnvelope(data=docs)
@@ -267,7 +334,10 @@ def create_app() -> FastAPI:
         kb_id: str = Form(...),
         file: UploadFile = File(...),
         rag: RagService = Depends(get_rag_service),
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
+        require_kb(meta, kb_id, principal)
         content = await file.read()
         logger.info(
             "docs.upload.start kb_id=%s filename=%s content_type=%s size=%s",
@@ -298,7 +368,13 @@ def create_app() -> FastAPI:
         return ApiEnvelope(data=doc)
 
     @app.delete(f"{settings.api_prefix}/docs/{{doc_id}}")
-    def delete_doc(doc_id: str, rag: RagService = Depends(get_rag_service)) -> ApiEnvelope:
+    def delete_doc(
+        doc_id: str,
+        rag: RagService = Depends(get_rag_service),
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
+    ) -> ApiEnvelope:
+        require_doc(meta, doc_id, principal)
         try:
             deleted = rag.delete_document(doc_id)
         except ValueError as exc:
@@ -311,7 +387,10 @@ def create_app() -> FastAPI:
         doc_id: str,
         background_tasks: BackgroundTasks,
         rag: RagService = Depends(get_rag_service),
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
+        require_doc(meta, doc_id, principal)
         try:
             doc = rag.begin_reindex(doc_id)
         except ValueError as exc:
@@ -323,10 +402,12 @@ def create_app() -> FastAPI:
         return ApiEnvelope(data=doc)
 
     @app.get(f"{settings.api_prefix}/docs/{{doc_id}}")
-    def get_doc(doc_id: str, meta: MetadataStore = Depends(get_meta)) -> ApiEnvelope:
-        doc = meta.get_doc(doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+    def get_doc(
+        doc_id: str,
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
+    ) -> ApiEnvelope:
+        doc = require_doc(meta, doc_id, principal)
         return ApiEnvelope(data=doc)
 
     @app.get(f"{settings.api_prefix}/docs/{{doc_id}}/chunks")
@@ -334,10 +415,9 @@ def create_app() -> FastAPI:
         doc_id: str,
         meta: MetadataStore = Depends(get_meta),
         chunks: ChunkStore = Depends(get_chunks),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
-        doc = meta.get_doc(doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+        require_doc(meta, doc_id, principal)
         chunk_rows = chunks.list_by_doc(doc_id)
         return ApiEnvelope(data=[DocumentChunk.model_validate(item) for item in chunk_rows])
 
@@ -347,10 +427,9 @@ def create_app() -> FastAPI:
         offset: int = 0,
         limit: int = 5000,
         meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
-        doc = meta.get_doc(doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+        doc = require_doc(meta, doc_id, principal)
         path = meta.upload_path(doc)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Original file not found")
@@ -376,10 +455,12 @@ def create_app() -> FastAPI:
         )
 
     @app.get(f"{settings.api_prefix}/docs/{{doc_id}}/download")
-    def download_doc(doc_id: str, meta: MetadataStore = Depends(get_meta)) -> FileResponse:
-        doc = meta.get_doc(doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+    def download_doc(
+        doc_id: str,
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
+    ) -> FileResponse:
+        doc = require_doc(meta, doc_id, principal)
         path = meta.upload_path(doc)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Original file not found")
@@ -395,9 +476,9 @@ def create_app() -> FastAPI:
         limit: int = 50,
         meta: MetadataStore = Depends(get_meta),
         logs: QueryLogStore = Depends(get_query_logs),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
-        if meta.get_kb(kb_id) is None:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        require_kb(meta, kb_id, principal)
         records = logs.list_by_kb(kb_id, limit=limit)
         return ApiEnvelope(data=records)
 
@@ -406,7 +487,10 @@ def create_app() -> FastAPI:
         body: QueryRequest,
         rag: RagService = Depends(get_rag_service),
         logs: QueryLogStore = Depends(get_query_logs),
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
     ) -> ApiEnvelope:
+        require_kb(meta, body.kb_id, principal)
         logger.info(
             "query.start kb_id=%s question_len=%s top_k=%s",
             body.kb_id,
@@ -460,7 +544,11 @@ def create_app() -> FastAPI:
         body: QueryRequest,
         rag: RagService = Depends(get_rag_service),
         logs: QueryLogStore = Depends(get_query_logs),
+        meta: MetadataStore = Depends(get_meta),
+        principal: Principal = Depends(get_principal),
     ) -> StreamingResponse:
+        require_kb(meta, body.kb_id, principal)
+
         def sse(event: str, data: dict | list | str) -> str:
             return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 

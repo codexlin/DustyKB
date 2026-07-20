@@ -57,8 +57,21 @@ class MetadataStore:
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
                         description TEXT NOT NULL DEFAULT '',
+                        owner_id TEXT NOT NULL DEFAULT '',
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE knowledge_bases
+                    ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner
+                    ON knowledge_bases (owner_id, created_at DESC)
                     """
                 )
                 cur.execute(
@@ -167,27 +180,47 @@ class MetadataStore:
             conn.commit()
         logger.info("postgres.metadata.migrated kbs=%s docs=%s", len(kb_rows), len(doc_rows))
 
-    def list_kbs(self) -> list[KnowledgeBase]:
+    def list_kbs(self, owner_id: Optional[str] = None) -> list[KnowledgeBase]:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT
-                        kb.id,
-                        kb.name,
-                        kb.description,
-                        kb.created_at::text,
-                        COUNT(doc.id)::int AS doc_count
-                    FROM knowledge_bases kb
-                    LEFT JOIN documents doc ON doc.kb_id = kb.id
-                    GROUP BY kb.id, kb.name, kb.description, kb.created_at
-                    ORDER BY kb.created_at DESC
-                    """
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        SELECT
+                            kb.id,
+                            kb.name,
+                            kb.description,
+                            kb.owner_id,
+                            kb.created_at::text,
+                            COUNT(doc.id)::int AS doc_count
+                        FROM knowledge_bases kb
+                        LEFT JOIN documents doc ON doc.kb_id = kb.id
+                        GROUP BY kb.id, kb.name, kb.description, kb.owner_id, kb.created_at
+                        ORDER BY kb.created_at DESC
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                            kb.id,
+                            kb.name,
+                            kb.description,
+                            kb.owner_id,
+                            kb.created_at::text,
+                            COUNT(doc.id)::int AS doc_count
+                        FROM knowledge_bases kb
+                        LEFT JOIN documents doc ON doc.kb_id = kb.id
+                        WHERE kb.owner_id = %s OR kb.owner_id = ''
+                        GROUP BY kb.id, kb.name, kb.description, kb.owner_id, kb.created_at
+                        ORDER BY kb.created_at DESC
+                        """,
+                        (owner_id,),
+                    )
                 rows = cur.fetchall()
         return [KnowledgeBase.model_validate(row) for row in rows]
 
-    def get_kb(self, kb_id: str) -> Optional[KnowledgeBase]:
+    def get_kb(self, kb_id: str, owner_id: Optional[str] = None) -> Optional[KnowledgeBase]:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -196,30 +229,47 @@ class MetadataStore:
                         kb.id,
                         kb.name,
                         kb.description,
+                        kb.owner_id,
                         kb.created_at::text,
                         COUNT(doc.id)::int AS doc_count
                     FROM knowledge_bases kb
                     LEFT JOIN documents doc ON doc.kb_id = kb.id
                     WHERE kb.id = %s
-                    GROUP BY kb.id, kb.name, kb.description, kb.created_at
+                    GROUP BY kb.id, kb.name, kb.description, kb.owner_id, kb.created_at
                     """,
                     (kb_id,),
                 )
                 row = cur.fetchone()
-        return KnowledgeBase.model_validate(row) if row else None
+        if row is None:
+            return None
+        kb = KnowledgeBase.model_validate(row)
+        if owner_id is not None and kb.owner_id and kb.owner_id != owner_id:
+            return None
+        return kb
 
-    def create_kb(self, name: str, description: str = "") -> KnowledgeBase:
-        kb = KnowledgeBase(id=str(uuid.uuid4()), name=name.strip(), description=description.strip())
+    def create_kb(self, name: str, description: str = "", owner_id: str = "") -> KnowledgeBase:
+        kb = KnowledgeBase(
+            id=str(uuid.uuid4()),
+            name=name.strip(),
+            description=description.strip(),
+            owner_id=owner_id,
+        )
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO knowledge_bases (id, name, description, created_at)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO knowledge_bases (id, name, description, owner_id, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (kb.id, kb.name, kb.description, kb.created_at),
+                    (kb.id, kb.name, kb.description, kb.owner_id, kb.created_at),
                 )
             conn.commit()
+        return kb
+
+    def assert_kb_access(self, kb_id: str, owner_id: str) -> KnowledgeBase:
+        kb = self.get_kb(kb_id, owner_id=owner_id)
+        if kb is None:
+            raise ValueError("Knowledge base not found")
         return kb
 
     def list_docs(self, kb_id: str) -> list[DocumentRecord]:

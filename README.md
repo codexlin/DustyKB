@@ -111,9 +111,12 @@ pnpm dev
 
 ## API
 
+生产环境建议设置 `ACCESS_TOKEN`：API 需 `Authorization: Bearer <token>`，前端会显示解锁页。未设置时保持开放（适合本地开发）。新建知识库会写入 `owner_id`（由令牌派生），列表按归属过滤；旧数据 `owner_id` 为空时仍对已解锁用户可见。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
+| GET | `/api/auth/status` | 是否要求访问令牌 |
 | GET/POST | `/api/kb` | 知识库列表 / 创建 |
 | GET | `/api/kb/{id}/docs` | 文档列表 |
 | GET | `/api/kb/{id}/query-logs` | 问答日志 |

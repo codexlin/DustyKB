@@ -1,12 +1,48 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const ACCESS_TOKEN_KEY = "dustykb:access-token";
 
 export type KnowledgeBase = {
   id: string;
   name: string;
   description: string;
+  owner_id?: string;
   created_at: string;
   doc_count: number;
 };
+
+export type AuthStatus = {
+  required: boolean;
+  authenticated: boolean;
+  owner_id: string;
+};
+
+export function getAccessToken() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(ACCESS_TOKEN_KEY) ?? "";
+}
+
+export function setAccessToken(token: string) {
+  if (typeof window === "undefined") return;
+  const value = token.trim();
+  if (value) {
+    window.localStorage.setItem(ACCESS_TOKEN_KEY, value);
+  } else {
+    window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+  }
+}
+
+export function clearAccessToken() {
+  setAccessToken("");
+}
+
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra);
+  const token = getAccessToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return headers;
+}
 
 export type DocumentRecord = {
   id: string;
@@ -133,7 +169,8 @@ type Envelope<T> = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const headers = authHeaders(init?.headers);
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   const payload = (await response.json().catch(() => null)) as Envelope<T> | null;
 
   if (!response.ok) {
@@ -149,6 +186,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return payload.data;
+}
+
+export function getAuthStatus() {
+  return request<AuthStatus>("/api/auth/status");
 }
 
 export function listKnowledgeBases() {
@@ -184,7 +225,9 @@ export function listDocumentChunks(docId: string) {
 }
 
 export function getDocumentDownloadUrl(docId: string) {
-  return `${API_BASE}/api/docs/${docId}/download`;
+  const token = getAccessToken();
+  const query = token ? `?access_token=${encodeURIComponent(token)}` : "";
+  return `${API_BASE}/api/docs/${docId}/download${query}`;
 }
 
 export function listQueryLogs(kbId: string, limit = 30) {
@@ -240,13 +283,14 @@ export async function askQuestionStream(
 ) {
   const response = await fetch(`${API_BASE}/api/query/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ kb_id: kbId, question }),
     signal: options?.signal,
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`Stream request failed (${response.status})`);
+    const detail = await response.text().catch(() => "");
+    throw new Error(detail || `Stream request failed (${response.status})`);
   }
 
   const reader = response.body.getReader();
