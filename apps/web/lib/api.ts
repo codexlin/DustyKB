@@ -203,11 +203,13 @@ export async function askQuestionStream(
   kbId: string,
   question: string,
   handlers: QueryStreamHandlers,
+  options?: { signal?: AbortSignal },
 ) {
   const response = await fetch(`${API_BASE}/api/query/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kb_id: kbId, question }),
+    signal: options?.signal,
   });
 
   if (!response.ok || !response.body) {
@@ -218,23 +220,43 @@ export async function askQuestionStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const raw = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      handleSseBlock(raw, handlers);
-      boundary = buffer.indexOf("\n\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const raw = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        handleSseBlock(raw, handlers);
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+
+    if (buffer.trim()) {
+      handleSseBlock(buffer, handlers);
+    }
+  } catch (error) {
+    if (options?.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    throw error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // stream may already be cancelled
     }
   }
+}
 
-  if (buffer.trim()) {
-    handleSseBlock(buffer, handlers);
-  }
+export function isAbortError(error: unknown) {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 function handleSseBlock(raw: string, handlers: QueryStreamHandlers) {

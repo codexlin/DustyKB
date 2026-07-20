@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { toast } from "sonner";
 
@@ -9,7 +9,7 @@ import { DashboardPageFrame } from "@/components/dashboard/dashboard-page-frame"
 import { useDocumentControls } from "@/components/dashboard/use-document-controls";
 import { useKnowledgeBaseControls } from "@/components/dashboard/use-knowledge-base-controls";
 import { WorkspaceContextPanel } from "@/components/dashboard/workspace-context-panel";
-import { askQuestionStream, listQueryLogs, updateQueryFeedback } from "@/lib/api";
+import { askQuestionStream, isAbortError, listQueryLogs, updateQueryFeedback } from "@/lib/api";
 
 export function WorkspacePageClient() {
   const [question, setQuestion] = useState("");
@@ -17,10 +17,13 @@ export function WorkspacePageClient() {
   const [expandedSource, setExpandedSource] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const queryAbortRef = useRef<AbortController | null>(null);
 
   const kb = useKnowledgeBaseControls({
     setError,
     onDeleted: () => {
+      queryAbortRef.current?.abort();
+      queryAbortRef.current = null;
       setTurns([]);
     },
   });
@@ -36,60 +39,99 @@ export function WorkspacePageClient() {
     await listQueryLogs(kbId);
   }, []);
 
+  function onCancelQuery() {
+    queryAbortRef.current?.abort();
+  }
+
   async function onAsk(event: FormEvent) {
     event.preventDefault();
-    if (!kb.selectedKbId || !question.trim()) return;
+    if (!kb.selectedKbId || !question.trim() || busy === "query") return;
+
     const turnId = crypto.randomUUID();
     const currentQuestion = question.trim();
+    const controller = new AbortController();
+    queryAbortRef.current?.abort();
+    queryAbortRef.current = controller;
+
     setQuestion("");
     setTurns((prev) => [{ id: turnId, question: currentQuestion }, ...prev]);
     setBusy("query");
     setError(null);
+
     try {
-      await askQuestionStream(kb.selectedKbId, currentQuestion, {
-        onSources: (sources) => {
-          setTurns((prev) =>
-            prev.map((turn) =>
-              turn.id === turnId
-                ? { ...turn, isComplete: false, result: { answer: "", sources, model: "qwen-plus" } }
-                : turn,
-            ),
-          );
+      await askQuestionStream(
+        kb.selectedKbId,
+        currentQuestion,
+        {
+          onSources: (sources) => {
+            setTurns((prev) =>
+              prev.map((turn) =>
+                turn.id === turnId
+                  ? { ...turn, isComplete: false, result: { answer: "", sources, model: "qwen-plus" } }
+                  : turn,
+              ),
+            );
+          },
+          onToken: (token) => {
+            setTurns((prev) =>
+              prev.map((turn) =>
+                turn.id === turnId
+                  ? {
+                      ...turn,
+                      result: {
+                        answer: `${turn.result?.answer ?? ""}${token}`,
+                        sources: turn.result?.sources ?? [],
+                        model: turn.result?.model ?? "qwen-plus",
+                      },
+                    }
+                  : turn,
+              ),
+            );
+          },
+          onDone: (result) => {
+            setTurns((prev) =>
+              prev.map((turn) => (turn.id === turnId ? { ...turn, isComplete: true, result } : turn)),
+            );
+          },
+          onError: (message) => {
+            throw new Error(message);
+          },
         },
-        onToken: (token) => {
-          setTurns((prev) =>
-            prev.map((turn) =>
-              turn.id === turnId
-                ? {
-                    ...turn,
-                    result: {
-                      answer: `${turn.result?.answer ?? ""}${token}`,
-                      sources: turn.result?.sources ?? [],
-                      model: turn.result?.model ?? "qwen-plus",
-                    },
-                  }
-                : turn,
-            ),
-          );
-        },
-        onDone: (result) => {
-          setTurns((prev) =>
-            prev.map((turn) => (turn.id === turnId ? { ...turn, isComplete: true, result } : turn)),
-          );
-        },
-        onError: (message) => {
-          throw new Error(message);
-        },
-      });
+        { signal: controller.signal },
+      );
       await refreshQueryLogs(kb.selectedKbId);
     } catch (err) {
+      if (isAbortError(err) || controller.signal.aborted) {
+        setTurns((prev) =>
+          prev.map((turn) =>
+            turn.id === turnId
+              ? {
+                  ...turn,
+                  isComplete: true,
+                  cancelled: true,
+                  result: turn.result ?? {
+                    answer: "",
+                    sources: [],
+                    model: "qwen-plus",
+                  },
+                }
+              : turn,
+          ),
+        );
+        toast.message("已取消本次生成");
+        return;
+      }
+
       const message = err instanceof Error ? err.message : "问答失败";
       setTurns((prev) =>
-        prev.map((turn) => (turn.id === turnId ? { ...turn, error: message } : turn)),
+        prev.map((turn) => (turn.id === turnId ? { ...turn, isComplete: true, error: message } : turn)),
       );
       setError(message);
       toast.error("问答失败", { description: message });
     } finally {
+      if (queryAbortRef.current === controller) {
+        queryAbortRef.current = null;
+      }
       setBusy(null);
     }
   }
@@ -130,6 +172,7 @@ export function WorkspacePageClient() {
           expandedSource={expandedSource}
           onQuestionChange={setQuestion}
           onAsk={onAsk}
+          onCancel={onCancelQuery}
           onFeedback={(logId, feedback) => void onFeedback(logId, feedback)}
           onToggleSource={setExpandedSource}
         />

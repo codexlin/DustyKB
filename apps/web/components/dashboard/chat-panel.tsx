@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, type FormEvent, type SyntheticEvent } from "react";
-import { ChevronDown, Loader2, MessageSquare, Search } from "lucide-react";
+import { useEffect, useState, type FormEvent, type KeyboardEvent, type SyntheticEvent } from "react";
+import { ChevronDown, Loader2, MessageSquare, Search, Square } from "lucide-react";
 
 import { HighlightText, SourceMatchNote } from "@/components/highlight-text";
 import { MarkdownAnswer } from "@/components/markdown-answer";
@@ -18,6 +18,7 @@ export type ChatTurn = {
   question: string;
   result?: QueryResult;
   isComplete?: boolean;
+  cancelled?: boolean;
   error?: string;
 };
 
@@ -36,6 +37,7 @@ export function ChatPanel({
   expandedSource,
   onQuestionChange,
   onAsk,
+  onCancel,
   onFeedback,
   onToggleSource,
 }: {
@@ -47,11 +49,14 @@ export function ChatPanel({
   expandedSource: string | null;
   onQuestionChange: (value: string) => void;
   onAsk: (event: FormEvent) => void;
+  onCancel: () => void;
   onFeedback: (logId: string | null | undefined, feedback: "helpful" | "not_helpful") => void;
   onToggleSource: (sourceId: string | null) => void;
 }) {
   const [openTurnId, setOpenTurnId] = useState<string | null>(null);
   const latestTurnId = turns[0]?.id ?? null;
+  const isQuerying = busy === "query";
+  const canSubmit = Boolean(selectedKbId && question.trim() && !isQuerying);
 
   useEffect(() => {
     if (latestTurnId) setOpenTurnId(latestTurnId);
@@ -60,6 +65,13 @@ export function ChatPanel({
   function onToggleTurn(turnId: string, event: SyntheticEvent<HTMLDetailsElement>) {
     const nextOpen = event.currentTarget.open;
     setOpenTurnId(nextOpen ? turnId : openTurnId === turnId ? null : openTurnId);
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    if (!canSubmit) return;
+    event.currentTarget.form?.requestSubmit();
   }
 
   return (
@@ -78,20 +90,46 @@ export function ChatPanel({
         </div>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-        <form className="space-y-3" onSubmit={onAsk}>
+        <form
+          className="overflow-hidden border border-primary/30 bg-background/70 shadow-[3px_3px_0_rgba(67,45,27,0.08)]"
+          onSubmit={onAsk}
+        >
           <Textarea
-            className="rounded-none border-primary/30 bg-background/70 font-mono"
+            className="min-h-24 resize-none rounded-none border-0 bg-transparent px-3 py-3 font-mono shadow-none focus-visible:border-transparent focus-visible:ring-0"
             value={question}
             onChange={(event) => onQuestionChange(event.target.value)}
-            placeholder="基于当前知识库提问..."
-            rows={4}
+            onKeyDown={onComposerKeyDown}
+            placeholder={selectedKbId ? "基于当前知识库提问..." : "请先选择知识库"}
+            rows={3}
             disabled={!selectedKbId}
-            required
           />
-          <Button className="w-full rounded-none border border-primary/40 font-mono uppercase tracking-[0.14em]" type="submit" disabled={!selectedKbId || busy === "query"}>
-            {busy === "query" ? <Loader2 className="animate-spin" /> : <Search />}
-            {busy === "query" ? "检索生成中" : "提问"}
-          </Button>
+          <div className="flex items-center justify-between gap-3 border-t border-primary/20 bg-muted/35 px-2 py-1.5">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Enter 换行 · ⌘/Ctrl+Enter 发送
+            </p>
+            {isQuerying ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="rounded-none border-destructive/40 font-mono uppercase tracking-[0.12em] text-destructive hover:bg-destructive/10"
+                onClick={onCancel}
+              >
+                <Square className="size-3 fill-current" />
+                取消
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                size="sm"
+                className="rounded-none border border-primary/40 font-mono uppercase tracking-[0.12em]"
+                disabled={!canSubmit}
+              >
+                <Search className="size-3.5" />
+                提问
+              </Button>
+            )}
+          </div>
         </form>
 
         <ScrollArea className="min-h-0 flex-1 pr-3">
@@ -101,9 +139,13 @@ export function ChatPanel({
               const isTurnOpen = openTurnId === turn.id || !turn.isComplete;
               const preview = turn.error
                 ? turn.error
-                : turn.result?.answer
-                  ? answerPreview(turn.result.answer)
-                  : "正在生成...";
+                : turn.cancelled
+                  ? turn.result?.answer
+                    ? `已取消 · ${answerPreview(turn.result.answer)}`
+                    : "已取消生成"
+                  : turn.result?.answer
+                    ? answerPreview(turn.result.answer)
+                    : "正在生成...";
 
               return (
                 <Card
@@ -121,11 +163,18 @@ export function ChatPanel({
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-start justify-between gap-3">
                           <p className="text-sm font-medium leading-5">{turn.question}</p>
-                          {sourceCount ? (
-                            <Badge variant="outline" className="shrink-0 rounded-none font-mono">
-                              {sourceCount} src
-                            </Badge>
-                          ) : null}
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {turn.cancelled ? (
+                              <Badge variant="outline" className="rounded-none font-mono text-destructive">
+                                cancelled
+                              </Badge>
+                            ) : null}
+                            {sourceCount ? (
+                              <Badge variant="outline" className="rounded-none font-mono">
+                                {sourceCount} src
+                              </Badge>
+                            ) : null}
+                          </div>
                         </div>
                         <p className="line-clamp-2 font-mono text-xs leading-5 text-muted-foreground group-open:hidden">
                           {preview}
@@ -139,12 +188,17 @@ export function ChatPanel({
                         <>
                           {turn.result.answer ? (
                             <MarkdownAnswer content={turn.result.answer} enhanced={turn.isComplete} />
+                          ) : turn.cancelled ? (
+                            <p className="font-mono text-sm text-muted-foreground">已取消，未生成完整回答。</p>
                           ) : (
                             <p className="flex items-center gap-2 text-sm text-muted-foreground">
                               <Loader2 className="size-4 animate-spin" /> 正在生成...
                             </p>
                           )}
-                          {turn.isComplete ? (
+                          {turn.cancelled && turn.result.answer ? (
+                            <p className="font-mono text-xs text-muted-foreground">生成已中断，以上为已输出片段。</p>
+                          ) : null}
+                          {turn.isComplete && !turn.cancelled ? (
                             <QualityPanel
                               latencyMs={turn.result.latency_ms}
                               model={turn.result.model}
