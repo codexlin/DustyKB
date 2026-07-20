@@ -17,8 +17,41 @@ export type DocumentRecord = {
   chunk_count: number;
   status: string;
   error_message: string;
+  progress_stage?: string;
+  progress_current?: number;
+  progress_total?: number;
   created_at: string;
 };
+
+const PROGRESS_STAGE_LABELS: Record<string, string> = {
+  queued: "排队中",
+  parsing: "解析中",
+  chunking: "切分中",
+  embedding: "向量化",
+  upserting: "写入向量库",
+  ready: "完成",
+  failed: "失败",
+};
+
+export function formatDocumentProgress(doc: Pick<DocumentRecord, "status" | "progress_stage" | "progress_current" | "progress_total" | "error_message" | "chunk_count">) {
+  if (doc.status === "failed") {
+    return doc.error_message || "索引失败";
+  }
+  if (doc.status === "ready") {
+    return `${doc.chunk_count} chunks ready`;
+  }
+  const stage = doc.progress_stage || "processing";
+  const label = PROGRESS_STAGE_LABELS[stage] || stage;
+  const current = doc.progress_current ?? 0;
+  const total = doc.progress_total ?? 0;
+  if (stage === "embedding" && total > 0) {
+    return `${label} ${current}/${total}`;
+  }
+  if (total > 0 && current > 0) {
+    return `${label} ${current}/${total}`;
+  }
+  return label;
+}
 
 export type DocumentChunk = {
   doc_id: string;

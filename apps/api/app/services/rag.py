@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any
 from typing import Optional
 import uuid
@@ -9,7 +10,7 @@ import uuid
 from app.config import Settings
 from app.schemas import DocumentRecord, QueryResponse, SourceCitation
 from app.services.chunking import chunk_text
-from app.services.documents import ParsedBlock, parse_document
+from app.services.documents import ParsedBlock, SUPPORTED_EXTENSIONS, parse_document
 from app.services.hybrid import Bm25IndexCache, fuse_dense_and_bm25
 from app.services.llm import ChatClient, EmbeddingClient, RerankClient
 from app.services.chunk_store import ChunkStore
@@ -32,6 +33,153 @@ class RagService:
         self.reranker = RerankClient(settings) if settings.rerank_enabled else None
         self.bm25_cache = _bm25_cache
 
+    def create_upload_record(
+        self,
+        *,
+        kb_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> DocumentRecord:
+        if self.meta.get_kb(kb_id) is None:
+            raise ValueError("Knowledge base not found")
+        if not content:
+            raise ValueError("Empty file")
+
+        safe_name = filename or "untitled.txt"
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported file type: {suffix or '(none)'}. Use .txt/.md/.pdf/.csv/.tsv/.xlsx"
+            )
+
+        self.meta.save_upload(kb_id, safe_name, content)
+        doc = DocumentRecord(
+            id=str(uuid.uuid4()),
+            kb_id=kb_id,
+            filename=safe_name,
+            content_type=content_type or "application/octet-stream",
+            size=len(content),
+            chunk_count=0,
+            status="processing",
+            progress_stage="queued",
+            progress_current=0,
+            progress_total=0,
+        )
+        self.meta.add_doc(doc)
+        logger.info(
+            "rag.upload.queued kb_id=%s doc_id=%s filename=%s bytes=%s",
+            kb_id,
+            doc.id,
+            safe_name,
+            len(content),
+        )
+        return doc
+
+    def begin_reindex(self, doc_id: str) -> DocumentRecord:
+        doc = self.meta.get_doc(doc_id)
+        if doc is None:
+            raise ValueError("Document not found")
+        path = self.meta.upload_path(doc)
+        if not path.exists():
+            self.meta.update_doc_status(
+                doc_id,
+                status="failed",
+                error_message="Original file not found",
+                progress_stage="failed",
+            )
+            raise ValueError("Original file not found")
+        saved = self.meta.update_doc_status(
+            doc.id,
+            status="processing",
+            error_message="",
+            progress_stage="queued",
+            progress_current=0,
+            progress_total=0,
+        )
+        if saved is None:
+            raise RuntimeError("Document metadata disappeared during reindex")
+        logger.info("rag.reindex.queued doc_id=%s kb_id=%s filename=%s", doc.id, doc.kb_id, doc.filename)
+        return saved
+
+    def index_document(self, doc_id: str) -> DocumentRecord:
+        started = time.perf_counter()
+        doc = self.meta.get_doc(doc_id)
+        if doc is None:
+            raise ValueError("Document not found")
+
+        path = self.meta.upload_path(doc)
+        if not path.exists():
+            failed = self.meta.update_doc_status(
+                doc_id,
+                status="failed",
+                error_message="Original file not found",
+                progress_stage="failed",
+            )
+            if failed is None:
+                raise ValueError("Document not found")
+            return failed
+
+        try:
+            self.meta.update_doc_status(
+                doc.id,
+                status="processing",
+                error_message="",
+                progress_stage="parsing",
+                progress_current=0,
+                progress_total=0,
+            )
+            content = path.read_bytes()
+            parsed = parse_document(doc.filename, content)
+            logger.info(
+                "rag.index.extract doc_id=%s blocks=%s chars=%s",
+                doc.id,
+                len(parsed.blocks),
+                len(parsed.text),
+            )
+            if not parsed.text.strip():
+                raise ValueError("No extractable text in file")
+
+            self.meta.update_doc_status(doc.id, status="processing", progress_stage="chunking")
+            chunks = self._chunks_from_blocks(parsed.blocks)
+            logger.info("rag.index.chunk doc_id=%s chunks=%s", doc.id, len(chunks))
+            if not chunks:
+                raise ValueError("Document produced no chunks")
+
+            self.chunks.delete_by_doc(doc.id)
+            self.vectors.delete_by_doc(doc.id)
+            self._index_chunks(doc=doc, chunks=chunks)
+
+            saved = self.meta.update_doc_status(
+                doc.id,
+                status="ready",
+                chunk_count=len(chunks),
+                error_message="",
+                progress_stage="ready",
+                progress_current=len(chunks),
+                progress_total=len(chunks),
+            )
+            if saved is None:
+                raise RuntimeError("Document metadata disappeared during indexing")
+            logger.info(
+                "rag.index.end doc_id=%s chunks=%s duration_ms=%.1f",
+                doc.id,
+                saved.chunk_count,
+                (time.perf_counter() - started) * 1000,
+            )
+            return saved
+        except Exception as exc:
+            failed = self.meta.update_doc_status(
+                doc.id,
+                status="failed",
+                error_message=str(exc),
+                progress_stage="failed",
+            )
+            logger.exception("rag.index.failed doc_id=%s", doc.id)
+            if failed is None:
+                raise RuntimeError(f"Document indexing failed: {exc}") from exc
+            return failed
+
     def ingest_file(
         self,
         *,
@@ -40,67 +188,14 @@ class RagService:
         content_type: str,
         content: bytes,
     ) -> DocumentRecord:
-        started = time.perf_counter()
-        logger.info(
-            "rag.ingest.start kb_id=%s filename=%s content_type=%s bytes=%s",
-            kb_id,
-            filename,
-            content_type,
-            len(content),
-        )
-        if self.meta.get_kb(kb_id) is None:
-            raise ValueError("Knowledge base not found")
-
-        parsed = parse_document(filename, content)
-        logger.info(
-            "rag.ingest.extract filename=%s blocks=%s chars=%s",
-            filename,
-            len(parsed.blocks),
-            len(parsed.text),
-        )
-        if not parsed.text.strip():
-            raise ValueError("No extractable text in file")
-
-        chunks = self._chunks_from_blocks(parsed.blocks)
-        logger.info(
-            "rag.ingest.chunk filename=%s chunks=%s chunk_size=%s overlap=%s",
-            filename,
-            len(chunks),
-            self.settings.chunk_size,
-            self.settings.chunk_overlap,
-        )
-        if not chunks:
-            raise ValueError("Document produced no chunks")
-
-        self.meta.save_upload(kb_id, filename, content)
-        doc = DocumentRecord(
-            id=str(uuid.uuid4()),
+        """Synchronous ingest helper for scripts/tests."""
+        doc = self.create_upload_record(
             kb_id=kb_id,
             filename=filename,
-            content_type=content_type or "application/octet-stream",
-            size=len(content),
-            chunk_count=0,
-            status="processing",
+            content_type=content_type,
+            content=content,
         )
-        self.meta.add_doc(doc)
-
-        try:
-            self._index_chunks(doc=doc, chunks=chunks)
-        except Exception as exc:
-            self.meta.update_doc_status(doc.id, status="failed", error_message=str(exc))
-            logger.exception("rag.ingest.failed kb_id=%s doc_id=%s", kb_id, doc.id)
-            raise RuntimeError(f"Document indexing failed: {exc}") from exc
-        saved = self.meta.update_doc_status(doc.id, status="ready", chunk_count=len(chunks), error_message="")
-        if saved is None:
-            raise RuntimeError("Document metadata disappeared during indexing")
-        logger.info(
-            "rag.ingest.end kb_id=%s doc_id=%s chunks=%s duration_ms=%.1f",
-            kb_id,
-            doc.id,
-            len(chunks),
-            (time.perf_counter() - started) * 1000,
-        )
-        return saved
+        return self.index_document(doc.id)
 
     def _chunks_from_blocks(self, blocks: list[ParsedBlock]) -> list[dict[str, Any]]:
         chunks: list[dict[str, Any]] = []
@@ -132,13 +227,43 @@ class RagService:
 
     def _index_chunks(self, *, doc: DocumentRecord, chunks: list[dict[str, Any]]) -> None:
         self.chunks.save_chunks_for_doc(doc_id=doc.id, kb_id=doc.kb_id, chunks=chunks)
+        texts = [chunk["text"] for chunk in chunks]
+        batch_size = max(1, int(self.settings.embedding_batch_size))
+        total = len(texts)
+        self.meta.update_doc_status(
+            doc.id,
+            status="processing",
+            progress_stage="embedding",
+            progress_current=0,
+            progress_total=total,
+        )
+
         embedding_started = time.perf_counter()
-        vectors = self.embeddings.embed_texts([chunk["text"] for chunk in chunks])
+        vectors: list[list[float]] = []
+        for offset in range(0, total, batch_size):
+            batch = texts[offset : offset + batch_size]
+            batch_vectors = self.embeddings.embed_texts(batch)
+            vectors.extend(batch_vectors)
+            self.meta.update_doc_status(
+                doc.id,
+                status="processing",
+                progress_stage="embedding",
+                progress_current=min(offset + len(batch), total),
+                progress_total=total,
+            )
         logger.info(
             "rag.index.embed doc_id=%s chunks=%s duration_ms=%.1f",
             doc.id,
             len(vectors),
             (time.perf_counter() - embedding_started) * 1000,
+        )
+
+        self.meta.update_doc_status(
+            doc.id,
+            status="processing",
+            progress_stage="upserting",
+            progress_current=total,
+            progress_total=total,
         )
         self.vectors.upsert_chunks(
             kb_id=doc.kb_id,
@@ -150,47 +275,16 @@ class RagService:
         self.bm25_cache.invalidate(doc.kb_id)
 
     def reindex_document(self, doc_id: str) -> DocumentRecord:
-        started = time.perf_counter()
-        doc = self.meta.get_doc(doc_id)
-        if doc is None:
-            raise ValueError("Document not found")
-        path = self.meta.upload_path(doc)
-        if not path.exists():
-            self.meta.update_doc_status(doc_id, status="failed", error_message="Original file not found")
-            raise ValueError("Original file not found")
-
-        logger.info("rag.reindex.start doc_id=%s kb_id=%s filename=%s", doc.id, doc.kb_id, doc.filename)
-        self.meta.update_doc_status(doc.id, status="processing", error_message="")
-        try:
-            parsed = parse_document(doc.filename, path.read_bytes())
-            if not parsed.text.strip():
-                raise ValueError("No extractable text in file")
-            chunks = self._chunks_from_blocks(parsed.blocks)
-            if not chunks:
-                raise ValueError("Document produced no chunks")
-            self.chunks.delete_by_doc(doc.id)
-            self.vectors.delete_by_doc(doc.id)
-            self._index_chunks(doc=doc, chunks=chunks)
-            saved = self.meta.update_doc_status(doc.id, status="ready", chunk_count=len(chunks), error_message="")
-        except Exception as exc:
-            self.meta.update_doc_status(doc.id, status="failed", error_message=str(exc))
-            logger.exception("rag.reindex.failed doc_id=%s", doc.id)
-            raise RuntimeError(f"Document reindex failed: {exc}") from exc
-        if saved is None:
-            raise RuntimeError("Document metadata disappeared during reindex")
-        logger.info(
-            "rag.reindex.end doc_id=%s chunks=%s duration_ms=%.1f",
-            doc.id,
-            saved.chunk_count,
-            (time.perf_counter() - started) * 1000,
-        )
-        return saved
+        """Synchronous reindex helper for scripts/tests."""
+        self.begin_reindex(doc_id)
+        return self.index_document(doc_id)
 
     def delete_document(self, doc_id: str) -> DocumentRecord:
         logger.info("rag.delete.start doc_id=%s", doc_id)
         deleted = self.meta.delete_doc(doc_id)
         if deleted is None:
             raise ValueError("Document not found")
+        self.chunks.delete_by_doc(doc_id)
         self.vectors.delete_by_doc(doc_id)
         self.bm25_cache.invalidate(deleted.kb_id)
         logger.info("rag.delete.end doc_id=%s kb_id=%s", doc_id, deleted.kb_id)

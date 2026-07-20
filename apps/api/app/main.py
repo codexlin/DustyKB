@@ -8,7 +8,7 @@ import uuid
 
 import httpx
 import psycopg
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 @lru_cache
 def get_rag_service() -> RagService:
     return RagService(get_settings())
+
+
+def _index_document_job(doc_id: str) -> None:
+    """Background worker uses a fresh RagService instance for thread safety."""
+    try:
+        RagService(get_settings()).index_document(doc_id)
+    except Exception:
+        logger.exception("docs.index.background_failed doc_id=%s", doc_id)
 
 
 @lru_cache
@@ -255,6 +263,7 @@ def create_app() -> FastAPI:
 
     @app.post(f"{settings.api_prefix}/docs/upload")
     async def upload_doc(
+        background_tasks: BackgroundTasks,
         kb_id: str = Form(...),
         file: UploadFile = File(...),
         rag: RagService = Depends(get_rag_service),
@@ -270,7 +279,7 @@ def create_app() -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Empty file")
         try:
-            doc = rag.ingest_file(
+            doc = rag.create_upload_record(
                 kb_id=kb_id,
                 filename=file.filename or "untitled.txt",
                 content_type=file.content_type or "application/octet-stream",
@@ -278,14 +287,13 @@ def create_app() -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        background_tasks.add_task(_index_document_job, doc.id)
         logger.info(
-            "docs.upload.end kb_id=%s doc_id=%s filename=%s chunks=%s",
+            "docs.upload.accepted kb_id=%s doc_id=%s filename=%s status=%s",
             kb_id,
             doc.id,
             doc.filename,
-            doc.chunk_count,
+            doc.status,
         )
         return ApiEnvelope(data=doc)
 
@@ -299,14 +307,19 @@ def create_app() -> FastAPI:
         return ApiEnvelope(data=deleted)
 
     @app.post(f"{settings.api_prefix}/docs/{{doc_id}}/reindex")
-    def reindex_doc(doc_id: str, rag: RagService = Depends(get_rag_service)) -> ApiEnvelope:
+    def reindex_doc(
+        doc_id: str,
+        background_tasks: BackgroundTasks,
+        rag: RagService = Depends(get_rag_service),
+    ) -> ApiEnvelope:
         try:
-            doc = rag.reindex_document(doc_id)
+            doc = rag.begin_reindex(doc_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        logger.info("docs.reindex doc_id=%s kb_id=%s chunks=%s", doc.id, doc.kb_id, doc.chunk_count)
+        background_tasks.add_task(_index_document_job, doc.id)
+        logger.info("docs.reindex.accepted doc_id=%s kb_id=%s status=%s", doc.id, doc.kb_id, doc.status)
         return ApiEnvelope(data=doc)
 
     @app.get(f"{settings.api_prefix}/docs/{{doc_id}}")

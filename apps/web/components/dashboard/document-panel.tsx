@@ -10,25 +10,32 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { EmptyState, formatDateTime, RetroLoading, TruncatedText } from "@/components/dashboard/shared";
 import type { UploadQueueItem } from "@/components/dashboard/use-document-controls";
-import { getDocumentDownloadUrl, type DocumentChunk, type DocumentPreview, type DocumentRecord, type KnowledgeBase } from "@/lib/api";
+import {
+  formatDocumentProgress,
+  getDocumentDownloadUrl,
+  type DocumentChunk,
+  type DocumentPreview,
+  type DocumentRecord,
+  type KnowledgeBase,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-function documentStatusMeta(status: string) {
-  if (status === "ready") {
+function documentStatusMeta(doc: DocumentRecord) {
+  if (doc.status === "ready") {
     return {
       label: "ready",
       icon: CheckCircle2,
       className: "border-[#6f8f4e]/50 bg-[#e4efd6] text-[#315c38]",
     };
   }
-  if (status === "processing") {
+  if (doc.status === "processing") {
     return {
-      label: "processing",
+      label: formatDocumentProgress(doc),
       icon: Clock3,
       className: "border-primary/50 bg-primary/10 text-primary",
     };
   }
-  if (status === "failed") {
+  if (doc.status === "failed") {
     return {
       label: "failed",
       icon: AlertTriangle,
@@ -36,17 +43,17 @@ function documentStatusMeta(status: string) {
     };
   }
   return {
-    label: status,
+    label: doc.status,
     icon: FileText,
     className: "border-primary/30 text-muted-foreground",
   };
 }
 
 function queueStatusMeta(status: UploadQueueItem["status"]) {
-  if (status === "ready") return { label: "Ready", className: "border-[#6f8f4e]/50 text-[#315c38]" };
-  if (status === "failed") return { label: "Failed", className: "border-destructive/50 text-destructive" };
-  if (status === "indexing") return { label: "Indexing", className: "border-primary/50 text-primary" };
-  return { label: "Uploading", className: "border-primary/40 text-primary" };
+  if (status === "ready") return { label: "完成", className: "border-[#6f8f4e]/50 text-[#315c38]" };
+  if (status === "failed") return { label: "失败", className: "border-destructive/50 text-destructive" };
+  if (status === "indexing") return { label: "处理中", className: "border-primary/50 text-primary" };
+  return { label: "上传中", className: "border-primary/40 text-primary" };
 }
 
 export function DocumentPanel({
@@ -196,7 +203,7 @@ export function DocumentPanel({
             <div className="space-y-2">
             {!loading ? docs.map((doc) => {
               const isSelected = selectedDocId === doc.id;
-              const statusMeta = documentStatusMeta(doc.status);
+              const statusMeta = documentStatusMeta(doc);
               const StatusIcon = statusMeta.icon;
               return (
                 <div
@@ -303,7 +310,7 @@ export function DocumentPanel({
             <div className="flex h-full min-h-0 flex-col gap-3">
               <div className="space-y-2 border-b border-primary/20 pb-3">
                 {(() => {
-                  const statusMeta = documentStatusMeta(selectedDoc.status);
+                  const statusMeta = documentStatusMeta(selectedDoc);
                   const StatusIcon = statusMeta.icon;
                   return (
                     <div className="flex items-start justify-between gap-3">

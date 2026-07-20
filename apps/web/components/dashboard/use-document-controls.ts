@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import {
   deleteDocument,
+  formatDocumentProgress,
   getDocumentPreview,
   listDocumentChunks,
   listDocuments,
@@ -24,6 +25,7 @@ const documentChunksQueryKey = (docId: string) => ["document-chunks", docId] as 
 export type UploadQueueItem = {
   id: string;
   filename: string;
+  docId?: string;
   status: "uploading" | "indexing" | "ready" | "failed";
   message?: string;
 };
@@ -113,6 +115,28 @@ export function useDocumentControls({
     }
   }, [documentsQuery.isPending, selectedKbId, switchingKbId]);
 
+  useEffect(() => {
+    const docs = documentsQuery.data;
+    if (!docs?.length) return;
+
+    setUploadQueue((items) => {
+      let changed = false;
+      const next = items.map((item) => {
+        if (!item.docId || item.status === "uploading") return item;
+        const matched = docs.find((row) => row.id === item.docId);
+        if (!matched) return item;
+
+        const status: UploadQueueItem["status"] =
+          matched.status === "ready" ? "ready" : matched.status === "failed" ? "failed" : "indexing";
+        const message = formatDocumentProgress(matched);
+        if (item.status === status && item.message === message) return item;
+        changed = true;
+        return { ...item, status, message };
+      });
+      return changed ? next : items;
+    });
+  }, [documentsQuery.data]);
+
   function clearDocumentSelection() {
     setSelectedDocId(null);
   }
@@ -149,13 +173,9 @@ export function useDocumentControls({
             item.id === itemId
               ? {
                   ...item,
+                  docId: doc.id,
                   status: doc.status === "ready" ? "ready" : doc.status === "failed" ? "failed" : "indexing",
-                  message:
-                    doc.status === "ready"
-                      ? `${doc.chunk_count} chunks ready`
-                      : doc.status === "failed"
-                        ? doc.error_message || "索引失败"
-                        : "索引处理中...",
+                  message: formatDocumentProgress(doc),
                 }
               : item,
           ),
@@ -165,7 +185,7 @@ export function useDocumentControls({
           return exists ? items.map((item) => (item.id === doc.id ? doc : item)) : [doc, ...items];
         });
       }
-      toast.success("文档上传完成", { description: `${uploaded} 个文件已入库` });
+      toast.success("文档已提交入库", { description: `${uploaded} 个文件正在后台处理` });
     } catch (err) {
       const message = err instanceof Error ? err.message : "上传失败";
       setUploadQueue((items) =>
@@ -209,19 +229,25 @@ export function useDocumentControls({
     setError(null);
     queryClient.setQueryData<DocumentRecord[]>(documentsQueryKey(selectedKbId), (items = []) =>
       items.map((item) =>
-        item.id === doc.id ? { ...item, status: "processing", error_message: "" } : item,
+        item.id === doc.id
+          ? {
+              ...item,
+              status: "processing",
+              error_message: "",
+              progress_stage: "queued",
+              progress_current: 0,
+              progress_total: 0,
+            }
+          : item,
       ),
     );
     try {
-      await reindexDocument(doc.id);
+      const updated = await reindexDocument(doc.id);
+      queryClient.setQueryData<DocumentRecord[]>(documentsQueryKey(selectedKbId), (items = []) =>
+        items.map((item) => (item.id === updated.id ? updated : item)),
+      );
       await refreshDocs(selectedKbId);
-      if (selectedDocId === doc.id) {
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: documentPreviewQueryKey(doc.id) }),
-          queryClient.invalidateQueries({ queryKey: documentChunksQueryKey(doc.id) }),
-        ]);
-      }
-      toast.success("重新索引完成", { description: doc.filename });
+      toast.success("已开始重新索引", { description: doc.filename });
     } catch (err) {
       const message = err instanceof Error ? err.message : "重新索引失败";
       setError(message);

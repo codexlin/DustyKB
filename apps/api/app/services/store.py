@@ -15,6 +15,21 @@ from app.schemas import DocumentRecord, KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
+_DOC_SELECT = """
+    id,
+    kb_id,
+    filename,
+    content_type,
+    size,
+    chunk_count,
+    status,
+    error_message,
+    progress_stage,
+    progress_current,
+    progress_total,
+    created_at::text
+"""
+
 
 class MetadataStore:
     """PostgreSQL-backed metadata store with one-time JSON migration."""
@@ -57,6 +72,9 @@ class MetadataStore:
                         chunk_count INTEGER NOT NULL DEFAULT 0,
                         status TEXT NOT NULL DEFAULT 'ready',
                         error_message TEXT NOT NULL DEFAULT '',
+                        progress_stage TEXT NOT NULL DEFAULT '',
+                        progress_current INTEGER NOT NULL DEFAULT 0,
+                        progress_total INTEGER NOT NULL DEFAULT 0,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                     """
@@ -65,6 +83,24 @@ class MetadataStore:
                     """
                     ALTER TABLE documents
                     ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT ''
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE documents
+                    ADD COLUMN IF NOT EXISTS progress_stage TEXT NOT NULL DEFAULT ''
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE documents
+                    ADD COLUMN IF NOT EXISTS progress_current INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE documents
+                    ADD COLUMN IF NOT EXISTS progress_total INTEGER NOT NULL DEFAULT 0
                     """
                 )
                 cur.execute(
@@ -107,9 +143,10 @@ class MetadataStore:
                     cur.execute(
                         """
                         INSERT INTO documents (
-                            id, kb_id, filename, content_type, size, chunk_count, status, error_message, created_at
+                            id, kb_id, filename, content_type, size, chunk_count, status, error_message,
+                            progress_stage, progress_current, progress_total, created_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
                         (
@@ -121,6 +158,9 @@ class MetadataStore:
                             row.get("chunk_count", 0),
                             row.get("status", "ready"),
                             row.get("error_message", ""),
+                            row.get("progress_stage", ""),
+                            row.get("progress_current", 0),
+                            row.get("progress_total", 0),
                             row.get("created_at"),
                         ),
                     )
@@ -186,17 +226,8 @@ class MetadataStore:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    SELECT
-                        id,
-                        kb_id,
-                        filename,
-                        content_type,
-                        size,
-                        chunk_count,
-                        status,
-                        error_message,
-                        created_at::text
+                    f"""
+                    SELECT {_DOC_SELECT}
                     FROM documents
                     WHERE kb_id = %s
                     ORDER BY created_at DESC
@@ -210,17 +241,8 @@ class MetadataStore:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    SELECT
-                        id,
-                        kb_id,
-                        filename,
-                        content_type,
-                        size,
-                        chunk_count,
-                        status,
-                        error_message,
-                        created_at::text
+                    f"""
+                    SELECT {_DOC_SELECT}
                     FROM documents
                     WHERE id = %s
                     """,
@@ -235,9 +257,10 @@ class MetadataStore:
                 cur.execute(
                     """
                     INSERT INTO documents (
-                        id, kb_id, filename, content_type, size, chunk_count, status, error_message, created_at
+                        id, kb_id, filename, content_type, size, chunk_count, status, error_message,
+                        progress_stage, progress_current, progress_total, created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         doc.id,
@@ -248,6 +271,9 @@ class MetadataStore:
                         doc.chunk_count,
                         doc.status,
                         doc.error_message,
+                        doc.progress_stage,
+                        doc.progress_current,
+                        doc.progress_total,
                         doc.created_at,
                     ),
                 )
@@ -260,7 +286,10 @@ class MetadataStore:
         *,
         status: str,
         chunk_count: Optional[int] = None,
-        error_message: str = "",
+        error_message: Optional[str] = None,
+        progress_stage: Optional[str] = None,
+        progress_current: Optional[int] = None,
+        progress_total: Optional[int] = None,
     ) -> Optional[DocumentRecord]:
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -270,10 +299,21 @@ class MetadataStore:
                     SET
                         status = %s,
                         chunk_count = COALESCE(%s, chunk_count),
-                        error_message = %s
+                        error_message = COALESCE(%s, error_message),
+                        progress_stage = COALESCE(%s, progress_stage),
+                        progress_current = COALESCE(%s, progress_current),
+                        progress_total = COALESCE(%s, progress_total)
                     WHERE id = %s
                     """,
-                    (status, chunk_count, error_message, doc_id),
+                    (
+                        status,
+                        chunk_count,
+                        error_message,
+                        progress_stage,
+                        progress_current,
+                        progress_total,
+                        doc_id,
+                    ),
                 )
             conn.commit()
         return self.get_doc(doc_id)

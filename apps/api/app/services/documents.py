@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from pypdf import PdfReader
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -112,11 +115,68 @@ def _parse_markdown(content: bytes) -> list[ParsedBlock]:
     return blocks or [ParsedBlock(text=text, content_type="text", parser="markdown")]
 
 
+# Han + CJK punctuation / fullwidth forms commonly doubled by broken PDF ToUnicode maps.
+_CJK_CHAR = re.compile(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]")
+_CJK_DUP = re.compile(r"([\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])\1+")
+
+
+def normalize_cjk_text(text: str, *, min_dup_ratio: float = 0.35) -> str:
+    """Collapse consecutive duplicated CJK glyphs when duplication rate is high.
+
+    Many Chinese PDFs extract as "中中文文" via broken ToUnicode maps. Only rewrite
+    when the duplicated-pair rate looks pathological to avoid harming normal 叠词.
+    """
+    if not text:
+        return text
+    cjk_chars = _CJK_CHAR.findall(text)
+    if len(cjk_chars) < 20:
+        return text
+    dup_pairs = sum(1 for left, right in zip(cjk_chars, cjk_chars[1:]) if left == right)
+    if dup_pairs / max(len(cjk_chars) - 1, 1) < min_dup_ratio:
+        return text
+    return _CJK_DUP.sub(r"\1", text)
+
+
 def _parse_pdf(content: bytes) -> list[ParsedBlock]:
+    try:
+        return _parse_pdf_pymupdf(content)
+    except Exception as exc:
+        logger.warning("pdf.pymupdf_failed fallback=pypdf error=%s", exc)
+        return _parse_pdf_pypdf(content)
+
+
+def _parse_pdf_pymupdf(content: bytes) -> list[ParsedBlock]:
+    import fitz
+
+    document = fitz.open(stream=content, filetype="pdf")
+    try:
+        page_count = document.page_count
+        blocks: list[ParsedBlock] = []
+        for index, page in enumerate(document, start=1):
+            text = normalize_cjk_text((page.get_text("text") or "").strip())
+            if not text:
+                continue
+            blocks.append(
+                ParsedBlock(
+                    text=f"## Page {index}\n\n{text}",
+                    content_type="text",
+                    parser="pymupdf",
+                    page=index,
+                    section=f"Page {index}",
+                    metadata={"page_count": page_count},
+                )
+            )
+        return blocks
+    finally:
+        document.close()
+
+
+def _parse_pdf_pypdf(content: bytes) -> list[ParsedBlock]:
     reader = PdfReader(io.BytesIO(content))
     blocks: list[ParsedBlock] = []
+    page_count = len(reader.pages)
     for index, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
+        text = normalize_cjk_text((page.extract_text() or "").strip())
         if not text:
             continue
         blocks.append(
@@ -126,7 +186,7 @@ def _parse_pdf(content: bytes) -> list[ParsedBlock]:
                 parser="pypdf",
                 page=index,
                 section=f"Page {index}",
-                metadata={"page_count": len(reader.pages)},
+                metadata={"page_count": page_count},
             )
         )
     return blocks

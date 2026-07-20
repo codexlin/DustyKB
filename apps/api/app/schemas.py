@@ -27,6 +27,9 @@ class DocumentRecord(BaseModel):
     chunk_count: int = 0
     status: str = "ready"
     error_message: str = ""
+    progress_stage: str = ""
+    progress_current: int = 0
+    progress_total: int = 0
     created_at: str = Field(default_factory=utc_now_iso)
 
 

@@ -74,6 +74,7 @@ pydantic-core==2.46.4
 pydantic-settings==2.14.2
     # via dustykb-api
 pypdf==6.14.2
+pymupdf>=1.24.0
     # via dustykb-api
 python-dotenv==1.2.2
     # via

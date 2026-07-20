@@ -1,7 +1,7 @@
 from pathlib import Path
 import zipfile
 
-from app.services.documents import extract_text, parse_document
+from app.services.documents import extract_text, normalize_cjk_text, parse_document
 
 
 def test_extract_text_from_markdown_bytes():
@@ -87,3 +87,15 @@ def test_parse_xlsx_as_table_block(tmp_path: Path):
     assert block.section == "Ledger"
     assert "| Account | Balance |" in block.text
     assert "| Cash | 1200 |" in block.text
+
+
+def test_normalize_cjk_text_collapses_pathological_duplication():
+    duplicated = "宣宣传传片片《《恰恰》》在在洪洪城城" * 4
+    normalized = normalize_cjk_text(duplicated)
+    assert "宣传片《恰》在洪城" in normalized
+    assert "宣宣" not in normalized
+
+
+def test_normalize_cjk_text_keeps_normal_reduplication():
+    text = "慢慢地看看这本书，谢谢大家。" * 3
+    assert normalize_cjk_text(text) == text
