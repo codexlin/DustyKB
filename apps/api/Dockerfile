@@ -2,11 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Avoid COPY from ghcr.io (often slow/unreachable on CN servers).
+RUN pip install --no-cache-dir uv
 
 ENV PYTHONPATH=.
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
+ENV PATH="/root/.local/bin:${PATH}"
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
