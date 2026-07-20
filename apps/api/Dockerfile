@@ -2,13 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Avoid COPY from ghcr.io (often slow/unreachable on CN servers).
+# CN-friendly PyPI mirror (ghcr + pypi.org are often unreachable/slow).
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
+ENV UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/
+ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
 RUN pip install --no-cache-dir uv
 
 ENV PYTHONPATH=.
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
-ENV PATH="/root/.local/bin:${PATH}"
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
