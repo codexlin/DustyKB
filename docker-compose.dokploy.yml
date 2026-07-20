@@ -50,6 +50,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       DATA_DIR: /app/data
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost:3000}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
     volumes:
       - api_data:/app/data
     expose:
