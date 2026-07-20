@@ -1,22 +1,22 @@
-# KB System
+# DustyKB
 
 可上线中文知识库 MVP：`Next.js` 前端 + `FastAPI` 后端 + `Qdrant` 向量库 + 通义（DashScope）Embedding / Qwen。
 
 ## 目录
 
 ```
-kb-system/
-  docker-compose.yml     # Qdrant
+dustykb/
+  docker-compose.yml     # PostgreSQL + Qdrant
   .env.example
   apps/
     api/                 # FastAPI
-    my-app/              # Next.js 前端
+    web/                 # Next.js 前端
 ```
 
 ## 1. 启动 Qdrant
 
 ```bash
-cd kb-system
+cd DustyKB
 docker compose up -d
 ```
 
@@ -41,7 +41,7 @@ PYTHONPATH=. uv run --python /opt/homebrew/bin/python3.12 uvicorn app.main:app -
 ## 3. 启动前端
 
 ```bash
-cd apps/my-app
+cd apps/web
 cp .env.local.example .env.local
 pnpm dev
 ```
@@ -76,5 +76,6 @@ Key 放在 `apps/api/.env` 的 `DASHSCOPE_API_KEY`。
 
 ```bash
 cd apps/api
-uv run --python /opt/homebrew/bin/python3.12 pytest
+uv sync --python /opt/homebrew/bin/python3.12 --group dev
+PYTHONPATH=. uv run --python /opt/homebrew/bin/python3.12 pytest
 ```

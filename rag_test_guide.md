@@ -1,6 +1,6 @@
-# LedgerKB RAG 测试指南
+# DustyKB RAG 测试指南
 
-LedgerKB 是一个面向中文知识库场景的 RAG 系统。它使用 FastAPI 提供后端接口，Next.js 提供前端页面，Qdrant 存储向量，PostgreSQL 存储知识库元数据与问答日志。
+DustyKB 是一个面向中文知识库场景的 RAG 系统。它使用 FastAPI 提供后端接口，Next.js 提供前端页面，Qdrant 存储向量，PostgreSQL 存储知识库元数据与问答日志。
 
 ## 核心流程
 
@@ -28,6 +28,6 @@ def filter_chunks(chunks: list[str], keyword: str) -> list[str]:
 
 ## 测试问题建议
 
-- LedgerKB 的核心流程是什么？
+- DustyKB 的核心流程是什么？
 - 为什么向量检索后还需要 Rerank？
 - 请用代码块展示文档里的 Python 示例。

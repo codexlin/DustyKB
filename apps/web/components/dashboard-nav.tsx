@@ -53,7 +53,7 @@ export function DashboardNav() {
             <div className="absolute -right-2 -top-2 rotate-3 border-2 border-primary/50 bg-accent px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-primary">
               KB
             </div>
-            <p className="font-heading text-xl font-semibold leading-none text-primary">LedgerKB</p>
+            <p className="font-heading text-xl font-semibold leading-none text-primary">DustyKB</p>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
               Archive Console
             </p>

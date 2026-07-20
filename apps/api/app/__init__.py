@@ -1,1 +1,1 @@
-"""KB System API package."""
+"""DustyKB API package."""

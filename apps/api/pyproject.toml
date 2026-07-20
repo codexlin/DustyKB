@@ -1,7 +1,7 @@
 [project]
-name = "kb-api"
+name = "dustykb-api"
 version = "0.1.0"
-description = "Chinese knowledge base API with Qdrant and DashScope"
+description = "DustyKB API with FastAPI, Qdrant, PostgreSQL, and DashScope"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

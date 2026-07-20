@@ -10,7 +10,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "KB System API"
+    app_name: str = "DustyKB API"
     api_prefix: str = "/api"
     cors_origins: str = "http://localhost:3000"
 

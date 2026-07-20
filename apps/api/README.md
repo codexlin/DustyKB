@@ -1,3 +1,3 @@
 # KB API
 
-FastAPI backend for LedgerKB. See root `README.md`.
+FastAPI backend for DustyKB. See root `README.md`.

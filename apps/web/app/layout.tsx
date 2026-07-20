@@ -24,7 +24,7 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LedgerKB · 中文知识库",
+  title: "DustyKB · 中文知识库",
   description: "Next.js + FastAPI + Qdrant 中文知识库工作台",
 };
 
