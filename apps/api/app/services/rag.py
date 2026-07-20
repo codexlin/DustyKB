@@ -10,7 +10,12 @@ import uuid
 from app.config import Settings
 from app.schemas import DocumentRecord, QueryResponse, SourceCitation
 from app.services.chunking import chunk_text
-from app.services.documents import ParsedBlock, SUPPORTED_EXTENSIONS, parse_document
+from app.services.documents import (
+    ParsedBlock,
+    SUPPORTED_EXTENSIONS,
+    assess_extract_quality,
+    parse_document,
+)
 from app.services.hybrid import Bm25IndexCache, fuse_dense_and_bm25
 from app.services.llm import ChatClient, EmbeddingClient, RerankClient
 from app.services.chunk_store import ChunkStore
@@ -131,14 +136,22 @@ class RagService:
             )
             content = path.read_bytes()
             parsed = parse_document(doc.filename, content)
+            quality = assess_extract_quality(
+                parsed.text,
+                filename=doc.filename,
+                content=content,
+            )
             logger.info(
-                "rag.index.extract doc_id=%s blocks=%s chars=%s",
+                "rag.index.extract doc_id=%s blocks=%s chars=%s quality=%.3f garbled=%.3f scan=%s",
                 doc.id,
                 len(parsed.blocks),
-                len(parsed.text),
+                quality.text_len,
+                quality.quality_score,
+                quality.garbled_score,
+                quality.likely_scan,
             )
-            if not parsed.text.strip():
-                raise ValueError("No extractable text in file")
+            if not quality.ok:
+                raise ValueError(quality.reason or "No extractable text in file")
 
             self.meta.update_doc_status(doc.id, status="processing", progress_stage="chunking")
             chunks = self._chunks_from_blocks(parsed.blocks)

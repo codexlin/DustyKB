@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,13 @@ from xml.etree import ElementTree as ET
 from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
+
+MOJIBAKE_MARKERS = ("�", "锟斤拷", "ï¿½", "□□", "\x00")
+MIN_EXTRACT_CHARS = 20
+MIN_PDF_CHARS = 80
+MAX_GARBLED_SCORE = 0.08
+HIGH_IMAGE_AREA_RATIO = 0.45
+MIN_PAGE_TEXT_FOR_SCAN = 40
 
 
 @dataclass(frozen=True)
@@ -135,6 +143,147 @@ def normalize_cjk_text(text: str, *, min_dup_ratio: float = 0.35) -> str:
     if dup_pairs / max(len(cjk_chars) - 1, 1) < min_dup_ratio:
         return text
     return _CJK_DUP.sub(r"\1", text)
+
+
+@dataclass(frozen=True)
+class ExtractQuality:
+    ok: bool
+    text_len: int
+    garbled_score: float
+    quality_score: float
+    likely_scan: bool = False
+    reason: str = ""
+
+
+def assess_extract_quality(
+    text: str,
+    *,
+    filename: str = "",
+    content: bytes | None = None,
+) -> ExtractQuality:
+    """Gate low-quality extracts so scan/garbled PDFs fail with a clear message."""
+    clean = (text or "").strip()
+    text_len = len(clean)
+    suffix = Path(filename).suffix.lower() if filename else ""
+    min_chars = MIN_PDF_CHARS if suffix == ".pdf" else MIN_EXTRACT_CHARS
+
+    if text_len == 0:
+        likely_scan = suffix == ".pdf"
+        return ExtractQuality(
+            ok=False,
+            text_len=0,
+            garbled_score=1.0,
+            quality_score=0.0,
+            likely_scan=likely_scan,
+            reason=(
+                "未能提取到可用文本。若为扫描件或图片型 PDF，当前不支持 OCR，请上传可选中文字的文件。"
+                if likely_scan
+                else "未能提取到可用文本。"
+            ),
+        )
+
+    garbled_score = _garbled_score(clean)
+    length_score = min(text_len / max(min_chars, 1), 1.0)
+    quality_score = max(0.0, min(1.0, length_score * (1.0 - garbled_score)))
+
+    likely_scan = False
+    if suffix == ".pdf" and content is not None:
+        likely_scan = _pdf_likely_scan(content)
+
+    if likely_scan and text_len < max(min_chars * 3, 200):
+        return ExtractQuality(
+            ok=False,
+            text_len=text_len,
+            garbled_score=garbled_score,
+            quality_score=quality_score,
+            likely_scan=True,
+            reason="疑似扫描件或图片型 PDF（页面图像多、可选文字少）。当前不支持 OCR，请上传文本型 PDF。",
+        )
+
+    if text_len < min_chars:
+        return ExtractQuality(
+            ok=False,
+            text_len=text_len,
+            garbled_score=garbled_score,
+            quality_score=quality_score,
+            likely_scan=likely_scan,
+            reason=f"提取文本过少（{text_len} 字），无法建立有效索引。",
+        )
+
+    if garbled_score > MAX_GARBLED_SCORE:
+        return ExtractQuality(
+            ok=False,
+            text_len=text_len,
+            garbled_score=garbled_score,
+            quality_score=quality_score,
+            likely_scan=likely_scan,
+            reason="提取文本疑似乱码，请检查文件编码或改用文本型 PDF / Markdown。",
+        )
+
+    return ExtractQuality(
+        ok=True,
+        text_len=text_len,
+        garbled_score=garbled_score,
+        quality_score=round(quality_score, 4),
+        likely_scan=likely_scan,
+    )
+
+
+def _garbled_score(text: str) -> float:
+    if not text:
+        return 1.0
+    marker_chars = sum(text.count(marker) * len(marker) for marker in MOJIBAKE_MARKERS)
+    suspect_chars = 0
+    for char in text:
+        if char.isspace():
+            continue
+        category = unicodedata.category(char)
+        if category in {"Cc", "Co", "Cs"} or char == "\ufffd":
+            suspect_chars += 1
+    return min(1.0, (marker_chars + suspect_chars) / max(len(text), 1))
+
+
+def _pdf_likely_scan(content: bytes) -> bool:
+    """Heuristic: many image-heavy pages with almost no selectable text."""
+    try:
+        import fitz
+    except ImportError:
+        return False
+
+    try:
+        document = fitz.open(stream=content, filetype="pdf")
+    except Exception:
+        return False
+
+    try:
+        page_count = document.page_count
+        if page_count <= 0:
+            return False
+        sparse_image_pages = 0
+        for page in document:
+            text_len = len((page.get_text("text") or "").strip())
+            image_ratio = _pdf_page_image_area_ratio(page)
+            if text_len < MIN_PAGE_TEXT_FOR_SCAN and image_ratio >= HIGH_IMAGE_AREA_RATIO:
+                sparse_image_pages += 1
+        return sparse_image_pages / page_count >= 0.5
+    finally:
+        document.close()
+
+
+def _pdf_page_image_area_ratio(page: Any) -> float:
+    page_area = max(float(page.rect.width * page.rect.height), 1.0)
+    image_area = 0.0
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 1:
+            continue
+        bbox = block.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        x0, y0, x1, y1 = [float(value) for value in bbox]
+        width = max(0.0, min(x1, page.rect.x1) - max(x0, page.rect.x0))
+        height = max(0.0, min(y1, page.rect.y1) - max(y0, page.rect.y0))
+        image_area += width * height
+    return min(1.0, image_area / page_area)
 
 
 def _parse_pdf(content: bytes) -> list[ParsedBlock]:

@@ -1,7 +1,12 @@
 from pathlib import Path
 import zipfile
 
-from app.services.documents import extract_text, normalize_cjk_text, parse_document
+from app.services.documents import (
+    assess_extract_quality,
+    extract_text,
+    normalize_cjk_text,
+    parse_document,
+)
 
 
 def test_extract_text_from_markdown_bytes():
@@ -99,3 +104,24 @@ def test_normalize_cjk_text_collapses_pathological_duplication():
 def test_normalize_cjk_text_keeps_normal_reduplication():
     text = "慢慢地看看这本书，谢谢大家。" * 3
     assert normalize_cjk_text(text) == text
+
+
+def test_assess_extract_quality_rejects_empty_pdf_message():
+    result = assess_extract_quality("", filename="scan.pdf")
+    assert not result.ok
+    assert result.likely_scan
+    assert "OCR" in result.reason
+
+
+def test_assess_extract_quality_rejects_garbled_text():
+    garbled = "正常内容" + ("�" * 40) + ("锟斤拷" * 10)
+    result = assess_extract_quality(garbled, filename="notes.md")
+    assert not result.ok
+    assert "乱码" in result.reason
+
+
+def test_assess_extract_quality_accepts_normal_chinese():
+    text = "这是一段用于知识库问答的正常中文说明文档。" * 5
+    result = assess_extract_quality(text, filename="notes.md")
+    assert result.ok
+    assert result.quality_score > 0.5
