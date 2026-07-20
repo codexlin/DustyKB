@@ -9,6 +9,7 @@ import uuid
 
 from app.config import Settings
 from app.schemas import DocumentRecord, QueryResponse, SourceCitation
+from app.services.answer_copy import no_source_answer, weak_match_answer
 from app.services.chunking import chunk_text
 from app.services.documents import (
     ParsedBlock,
@@ -368,7 +369,8 @@ class RagService:
         kb_id: str,
         question: str,
         top_k: Optional[int] = None,
-    ) -> tuple[str, list[SourceCitation]]:
+    ) -> tuple[str, list[SourceCitation], bool]:
+        """Return (context, sources, used_rerank)."""
         started = time.perf_counter()
         if self.meta.get_kb(kb_id) is None:
             raise ValueError("Knowledge base not found")
@@ -378,8 +380,9 @@ class RagService:
 
         if not hits:
             logger.info("rag.query.empty kb_id=%s duration_ms=%.1f", kb_id, (time.perf_counter() - started) * 1000)
-            return "", []
+            return "", [], False
 
+        used_rerank = False
         if self.reranker is not None and len(hits) > 1:
             rerank_input_count = len(hits)
             rerank_started = time.perf_counter()
@@ -398,6 +401,7 @@ class RagService:
                     hit["score"] = rerank_score
                     reranked_hits.append(hit)
                 hits = reranked_hits or hits[: self.settings.rerank_top_k]
+                used_rerank = bool(reranked_hits)
                 logger.info(
                     "rag.query.rerank kb_id=%s input=%s output=%s duration_ms=%.1f",
                     kb_id,
@@ -438,16 +442,54 @@ class RagService:
                 )
             )
 
-        logger.info("rag.context.end kb_id=%s sources=%s duration_ms=%.1f", kb_id, len(sources), (time.perf_counter() - started) * 1000)
-        return "\n\n".join(context_blocks), sources
+        logger.info(
+            "rag.context.end kb_id=%s sources=%s used_rerank=%s duration_ms=%.1f",
+            kb_id,
+            len(sources),
+            used_rerank,
+            (time.perf_counter() - started) * 1000,
+        )
+        return "\n\n".join(context_blocks), sources, used_rerank
+
+    def no_match_answer(self, kb_id: str) -> str:
+        kb = self.meta.get_kb(kb_id)
+        docs = self.meta.list_docs(kb_id)
+        ready_count = sum(1 for doc in docs if doc.status == "ready")
+        processing_count = sum(1 for doc in docs if doc.status == "processing")
+        return no_source_answer(
+            kb_name=kb.name if kb else "当前文库",
+            doc_count=len(docs),
+            ready_count=ready_count,
+            processing_count=processing_count,
+        )
+
+    def is_weak_match(self, *, sources: list[SourceCitation], used_rerank: bool) -> bool:
+        min_score = float(self.settings.answer_min_score)
+        if not used_rerank or min_score <= 0 or not sources:
+            return False
+        return float(sources[0].score) < min_score
 
     def query(self, *, kb_id: str, question: str, top_k: Optional[int] = None) -> QueryResponse:
         started = time.perf_counter()
-        context, sources = self.build_context(kb_id=kb_id, question=question, top_k=top_k)
+        context, sources, used_rerank = self.build_context(kb_id=kb_id, question=question, top_k=top_k)
         if not sources:
             return QueryResponse(
-                answer="知识库中暂无相关内容，请先上传文档后再提问。",
+                answer=self.no_match_answer(kb_id),
                 sources=[],
+                model=self.settings.chat_model,
+            )
+
+        if self.is_weak_match(sources=sources, used_rerank=used_rerank):
+            kb = self.meta.get_kb(kb_id)
+            logger.info(
+                "rag.query.weak_match kb_id=%s top_score=%.4f min_score=%.4f",
+                kb_id,
+                sources[0].score,
+                self.settings.answer_min_score,
+            )
+            return QueryResponse(
+                answer=weak_match_answer(kb_name=kb.name if kb else "当前文库"),
+                sources=sources,
                 model=self.settings.chat_model,
             )
 

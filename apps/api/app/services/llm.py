@@ -63,10 +63,10 @@ class ChatClient:
 
     def _messages(self, *, question: str, context: str) -> list[dict[str, str]]:
         system = (
-            "你是企业知识库助手。只根据提供的资料回答用户问题。"
-            "如果资料不足以回答，请明确说不知道，不要编造。"
-            "回答使用简洁中文，必要时分点说明。"
-            "如果需要展示代码，请使用 Markdown fenced code block，并标注语言。"
+            "你是 DustyKB 文库助手：帮用户对着已收录的资料追问，并便于核对原文。"
+            "只根据「资料」回答；资料没写到的内容要直说不知道或资料未覆盖，不要编造。"
+            "语气简洁友好，用中文；必要时分点。引用资料时可用 [1]、[2] 对应来源编号。"
+            "展示代码时使用 Markdown fenced code block，并标注语言。"
         )
         user = f"资料：\n{context}\n\n问题：{question}"
         return [

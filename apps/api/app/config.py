@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     chunk_overlap: int = 80
     retrieve_top_k: int = 20
     rerank_top_k: int = 6
+    # When rerank ran successfully, skip LLM if top score is below this (0 = disable).
+    answer_min_score: float = 0.12
 
     # Hybrid retrieval: Qdrant dense + local BM25 + RRF, then existing DashScope rerank
     hybrid_enabled: bool = True

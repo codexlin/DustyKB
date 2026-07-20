@@ -28,6 +28,7 @@ from app.schemas import (
     ServiceStatus,
     SystemStatus,
 )
+from app.services.answer_copy import weak_match_answer
 from app.services.llm import ChatClient, EmbeddingClient, RerankClient
 from app.services.documents import extract_text
 from app.services.chunk_store import ChunkStore
@@ -561,14 +562,18 @@ def create_app() -> FastAPI:
             )
             started = time.perf_counter()
             try:
-                context, sources = rag.build_context(
+                context, sources, used_rerank = rag.build_context(
                     kb_id=body.kb_id,
                     question=body.question,
                     top_k=body.top_k,
                 )
                 yield sse("sources", [source.model_dump() for source in sources])
                 if not sources:
-                    answer = "知识库中暂无相关内容，请先上传文档后再提问。"
+                    answer = rag.no_match_answer(body.kb_id)
+                    yield sse("token", answer)
+                elif rag.is_weak_match(sources=sources, used_rerank=used_rerank):
+                    kb = meta.get_kb(body.kb_id)
+                    answer = weak_match_answer(kb_name=kb.name if kb else "当前文库")
                     yield sse("token", answer)
                 else:
                     answer_parts: list[str] = []
